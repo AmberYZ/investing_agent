@@ -29,6 +29,7 @@ from app.models import (
     NarrativeMentionsDaily,
     Theme,
     ThemeAlias,
+    ThemeInstrument,
     ThemeMentionsDaily,
     ThemeNarrativeSummaryCache,
     ThemeRelationDaily,
@@ -76,6 +77,19 @@ from app.schemas import (
     ThemeIdLabelOut,
     ThemeOut,
     ThemeWithNarrativesOut,
+    SentimentRankingsOut,
+    InflectionsOut,
+    ThemeInstrumentOut,
+    ThemeInstrumentCreate,
+    SuggestInstrumentsOut,
+    SuggestedInstrumentItem,
+)
+from app.analytics import (
+    get_trending_themes,
+    get_sentiment_rankings,
+    get_inflections,
+    get_debated_themes,
+    get_archived_themes,
 )
 from app.insights import get_theme_insights
 from app.llm.api_extract import get_extraction_prompt_template, set_extraction_prompt_template
@@ -288,6 +302,8 @@ def ingest_file(
 @app.get("/themes", response_model=list[ThemeOut])
 def list_themes(
     sort: str = Query("recent", description="recent or label"),
+    active_only: bool = Query(False, description="If true, only themes with evidence in the last active_days"),
+    active_days: int = Query(30, ge=1, le=365, description="Used when active_only=true"),
     db: Session = Depends(get_db),
 ):
     now = dt.datetime.now(dt.timezone.utc)
@@ -297,6 +313,22 @@ def list_themes(
         .outerjoin(Narrative, Narrative.theme_id == Theme.id)
         .group_by(Theme.id)
     )
+    if active_only:
+        since_date = (now - dt.timedelta(days=active_days)).date()
+        doc_date = func.date(_doc_timestamp())
+        active_ids = set(
+            r.theme_id
+            for r in db.query(Narrative.theme_id)
+            .join(Evidence, Evidence.narrative_id == Narrative.id)
+            .join(Document, Evidence.document_id == Document.id)
+            .filter(doc_date >= since_date)
+            .distinct()
+            .all()
+        )
+        if active_ids:
+            q = q.filter(Theme.id.in_(active_ids))
+        else:
+            q = q.filter(Theme.id == -1)
     if sort == "label":
         q = q.order_by(Theme.canonical_label.asc())
     else:
@@ -334,6 +366,58 @@ def get_themes_contrarian_recent(
         .all()
     )
     return [ThemeIdLabelOut(id=r.id, canonical_label=r.canonical_label) for r in rows]
+
+
+@app.get("/themes/archived", response_model=list[ThemeOut])
+def list_archived_themes(
+    inactive_days: int = Query(30, ge=1, le=365, description="No evidence in the last N days"),
+    db: Session = Depends(get_db),
+):
+    """Themes with no evidence in the last N days."""
+    return get_archived_themes(db, inactive_days=inactive_days)
+
+
+@app.get("/analytics/themes/trending", response_model=list[ThemeOut])
+def analytics_trending(
+    recent_days: int = Query(14, ge=1, le=90),
+    prior_days: int = Query(30, ge=1, le=180),
+    limit: int = Query(30, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Themes where mention count in recent window exceeds prior window."""
+    return get_trending_themes(db, recent_days=recent_days, prior_days=prior_days, limit=limit)
+
+
+@app.get("/analytics/themes/sentiment-rankings", response_model=SentimentRankingsOut)
+def analytics_sentiment_rankings(
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(30, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Most positive and most negative themes by (bullish - bearish) / total over window."""
+    return get_sentiment_rankings(db, days=days, limit=limit)
+
+
+@app.get("/analytics/themes/inflections", response_model=InflectionsOut)
+def analytics_inflections(
+    recent_days: int = Query(14, ge=1, le=90),
+    prior_days: int = Query(30, ge=1, le=180),
+    limit: int = Query(30, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Four lists: less bullish, less bearish, attention peaking, most crowded."""
+    return get_inflections(db, recent_days=recent_days, prior_days=prior_days, limit=limit)
+
+
+@app.get("/analytics/themes/debated", response_model=list[ThemeOut])
+def analytics_debated(
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(30, ge=1, le=100),
+    min_score: float = Query(0.3, ge=0, le=1),
+    db: Session = Depends(get_db),
+):
+    """Themes with high debate score (no single dominant narrative)."""
+    return get_debated_themes(db, days=days, limit=limit, min_score=min_score)
 
 
 def _aggregate_network_by_canonical_label(
@@ -1029,6 +1113,103 @@ def get_theme_metrics(
         ]
     # No pre-aggregated rows: compute from Evidence so the chart shows volume when narratives exist
     return _theme_metrics_from_evidence(db, theme_id, since)
+
+
+@app.get("/themes/{theme_id}/instruments", response_model=list[ThemeInstrumentOut])
+def list_theme_instruments(theme_id: int, db: Session = Depends(get_db)):
+    """List stocks/ETFs associated with this theme (manual, from_documents, llm_suggested)."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    rows = db.query(ThemeInstrument).filter(ThemeInstrument.theme_id == theme_id).order_by(ThemeInstrument.symbol).all()
+    return [
+        ThemeInstrumentOut(id=r.id, theme_id=r.theme_id, symbol=r.symbol, display_name=r.display_name, type=r.type or "stock", source=r.source or "manual")
+        for r in rows
+    ]
+
+
+@app.post("/themes/{theme_id}/instruments", response_model=ThemeInstrumentOut)
+def add_theme_instrument(
+    theme_id: int,
+    body: ThemeInstrumentCreate,
+    db: Session = Depends(get_db),
+):
+    """Add a ticker to this theme (source: manual or llm_suggested)."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    source = (body.source or "manual").lower()
+    if source not in ("manual", "llm_suggested"):
+        source = "manual"
+    symbol = (body.symbol or "").strip().upper()[:32]
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol required")
+    existing = db.query(ThemeInstrument).filter(ThemeInstrument.theme_id == theme_id, ThemeInstrument.symbol == symbol).one_or_none()
+    if existing:
+        return ThemeInstrumentOut(id=existing.id, theme_id=existing.theme_id, symbol=existing.symbol, display_name=existing.display_name, type=existing.type or "stock", source=existing.source or "manual")
+    inst = ThemeInstrument(
+        theme_id=theme_id,
+        symbol=symbol,
+        display_name=(body.display_name or "").strip()[:256] or None,
+        type=(body.type or "stock").lower()[:16] or "stock",
+        source=source,
+    )
+    db.add(inst)
+    db.commit()
+    db.refresh(inst)
+    return ThemeInstrumentOut(id=inst.id, theme_id=inst.theme_id, symbol=inst.symbol, display_name=inst.display_name, type=inst.type or "stock", source=inst.source or "manual")
+
+
+@app.delete("/themes/{theme_id}/instruments/{instrument_id}")
+def delete_theme_instrument(
+    theme_id: int,
+    instrument_id: int,
+    db: Session = Depends(get_db),
+):
+    """Remove an instrument from this theme."""
+    inst = db.query(ThemeInstrument).filter(ThemeInstrument.id == instrument_id, ThemeInstrument.theme_id == theme_id).one_or_none()
+    if inst is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    db.delete(inst)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/themes/{theme_id}/instruments/from-documents", response_model=list[ThemeInstrumentOut])
+def add_theme_instruments_from_documents(theme_id: int, db: Session = Depends(get_db)):
+    """Scan theme evidence for ticker mentions and add them with source=from_documents."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    from app.instruments import extract_instruments_from_theme_documents
+    created = extract_instruments_from_theme_documents(db, theme_id)
+    return [
+        ThemeInstrumentOut(id=r.id, theme_id=r.theme_id, symbol=r.symbol, display_name=r.display_name, type=r.type or "stock", source=r.source or "from_documents")
+        for r in created
+    ]
+
+
+@app.get("/themes/{theme_id}/instruments/suggest", response_model=SuggestInstrumentsOut)
+def suggest_theme_instruments(theme_id: int, db: Session = Depends(get_db)):
+    """LLM-suggested tickers for this theme (not persisted; client can add via POST)."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    from app.instruments import suggest_instruments_llm
+    items = suggest_instruments_llm(theme.canonical_label, theme.description)
+    return SuggestInstrumentsOut(
+        suggestions=[SuggestedInstrumentItem(symbol=x["symbol"], display_name=x.get("display_name"), type=x.get("type") or "stock") for x in items]
+    )
+
+
+@app.get("/instruments/{symbol}/prices")
+def get_instrument_prices(
+    symbol: str,
+    months: int = Query(6, ge=1, le=12),
+):
+    """Price history, valuation (trailing/forward PE), and technical indicators (SMA, RSI, MACD) via Alpha Vantage."""
+    from app.market_data import get_prices_and_valuation
+    return get_prices_and_valuation(symbol, months=months)
 
 
 @app.get("/themes/{theme_id}/metrics-by-stance", response_model=list[ThemeMetricsByStanceOut])

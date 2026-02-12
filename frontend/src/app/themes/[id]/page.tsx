@@ -2,6 +2,7 @@ import Link from "next/link";
 import { MarkThemeAsRead } from "./MarkThemeAsRead";
 import { ThemeChartAndDayDocs } from "./ThemeChartAndDayDocs";
 import { ThemeConfidenceChart } from "./ThemeConfidenceChart";
+import { ThemeInstruments } from "./ThemeInstruments";
 import { ThemeStanceChart } from "./ThemeStanceChart";
 import { TodaysNarratives } from "./TodaysNarratives";
 
@@ -306,6 +307,9 @@ export default async function ThemePage(
             </p>
           )}
         </section>
+
+        {/* Related stocks & ETFs: click ticker for price chart, valuation, narrative overlay */}
+        <ThemeInstruments themeId={id} />
 
         {/* 3) Share of voice over time (with optional stacked by sub-theme in ThemeChartAndDayDocs) */}
         <ThemeChartAndDayDocs

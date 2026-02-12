@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     theme_merge_reinforcement_enabled: bool = True
     theme_merge_reinforcement_threshold: float = 0.8  # min cosine sim to resolve label to a reinforcement target
 
+    # Market data (stocks/ETFs): Alpha Vantage for price chart and valuation (trailing/forward PE).
+    alpha_vantage_api_key: str = ""
+
     # Optional: write backend logs to this file (worker + API). Leave empty for stdout only.
     log_file: str = ""
 

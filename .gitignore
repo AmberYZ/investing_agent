@@ -13,7 +13,11 @@ venv/
 
 # Local artifacts
 dev.db
+dev.db-wal
+dev.db-shm
 *.sqlite
+*.sqlite-wal
+*.sqlite-shm
 .local_storage/
 watch_pdfs/
 backend/logs/

@@ -337,3 +337,44 @@ class ThemeInsightsOut(BaseModel):
     emerging: list[EmergingNarrativeOut] = Field(default_factory=list)
     debate: Optional[ThemeDebateOut] = None
 
+
+class SentimentRankingsOut(BaseModel):
+    """Most positive and most negative themes by stance over a window."""
+    most_positive: list[ThemeOut] = Field(default_factory=list)
+    most_negative: list[ThemeOut] = Field(default_factory=list)
+
+
+class InflectionsOut(BaseModel):
+    """Four inflection lists: less bullish, less bearish, attention peaking, most crowded."""
+    bullish_turning_neutral_bearish: list[ThemeOut] = Field(default_factory=list)
+    bearish_turning_neutral_bullish: list[ThemeOut] = Field(default_factory=list)
+    attention_peaking: list[ThemeOut] = Field(default_factory=list)
+    most_crowded: list[ThemeOut] = Field(default_factory=list)
+
+
+class ThemeInstrumentOut(BaseModel):
+    id: int
+    theme_id: int
+    symbol: str
+    display_name: Optional[str] = None
+    type: str = "stock"
+    source: str = "manual"
+
+
+class ThemeInstrumentCreate(BaseModel):
+    symbol: str
+    display_name: Optional[str] = None
+    type: str = "stock"
+    source: str = "manual"
+
+
+class SuggestedInstrumentItem(BaseModel):
+    symbol: str
+    display_name: Optional[str] = None
+    type: str = "stock"
+
+
+class SuggestInstrumentsOut(BaseModel):
+    """LLM-suggested tickers for a theme (not yet persisted)."""
+    suggestions: list[SuggestedInstrumentItem] = Field(default_factory=list)
+

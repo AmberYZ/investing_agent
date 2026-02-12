@@ -128,6 +128,20 @@ python3.12 -m venv .venv
 
 Do the same for `ingest-client/` if you use its venv. Then restart the API and worker.
 
+### pip “dependency conflicts” after install
+
+If you see “dependency conflicts” involving `minimagen`, `tensorflow`, `wandb`, `jupyter-server`, etc., pip is warning about **other packages** already installed in that Python environment, not about this project’s requirements. The install usually still succeeds (exit code 0).
+
+To avoid mixing with those packages, use a **dedicated venv** for the backend so only this project’s deps are installed:
+
+```bash
+cd backend
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Then run the API with `.venv/bin/python -m uvicorn app.main:app --reload --port 8000` (see table above).
+
 ### `ERROR: Failed building wheel for grpcio`
 
 **Local dev (sqlite + local storage)** no longer installs Google Cloud packages, so you shouldn’t see this. Use only:

@@ -299,7 +299,8 @@ def compute_debate(
 ) -> Optional["ThemeDebateOut"]:
     """
     Debate intensity: multiple competing narratives with no single dominant view.
-    score = 1 - top_share (or entropy-based). High score = heavily debated.
+    Uses relative statistics only: narrative shares = mention_count / total (proportions);
+    score = 1 - top_share. High score = heavily debated.
     """
     from app.schemas import ThemeDebateOut
 

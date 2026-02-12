@@ -93,6 +93,7 @@ class Theme(Base):
 
     narratives: Mapped[list["Narrative"]] = relationship(back_populates="theme", cascade="all, delete-orphan")
     aliases: Mapped[list["ThemeAlias"]] = relationship(back_populates="theme", cascade="all, delete-orphan")
+    instruments: Mapped[list["ThemeInstrument"]] = relationship(back_populates="theme", cascade="all, delete-orphan")
 
 
 class ThemeAlias(Base):
@@ -108,6 +109,23 @@ class ThemeAlias(Base):
     theme: Mapped["Theme"] = relationship(back_populates="aliases")
 
     __table_args__ = (UniqueConstraint("theme_id", "alias", name="uq_theme_aliases_theme_alias"),)
+
+
+class ThemeInstrument(Base):
+    """Stock/ETF ticker associated with a theme. source: manual | from_documents | llm_suggested."""
+    __tablename__ = "theme_instruments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    theme_id: Mapped[int] = mapped_column(ForeignKey("themes.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    display_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    type: Mapped[str] = mapped_column(String(16), default="stock")  # stock | etf | other
+    source: Mapped[str] = mapped_column(String(24), default="manual", index=True)  # manual | from_documents | llm_suggested
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc))
+
+    theme: Mapped["Theme"] = relationship(back_populates="instruments")
+
+    __table_args__ = (UniqueConstraint("theme_id", "symbol", name="uq_theme_instruments_theme_symbol"),)
 
 
 class Narrative(Base):
