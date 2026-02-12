@@ -1,0 +1,57 @@
+Extract a summary, themes, sub-themes, and narratives from the following document text. The goal is to surface themes that affect investment decisions and can be tracked as narratives evolve over time.
+
+Summary
+- Write a concise 2-4 sentence summary of the document's key investment takeaways. Focus on the most important findings, data points, or conclusions an investor should know. This summary is displayed as "Key Takeaways" on the document page, so make it punchy and actionable. Always provide a non-empty summary string.
+
+Definitions
+
+Theme
+- The highest-level investable or analytical bucket: an entity, company, sector, or market anchor that is stable over 12–24 months.
+- The theme label must be ONLY the core entity or topic name—short and canonical. NEVER append qualifiers, aspects, strategies, or dimensions to the theme label. Those belong in sub-themes.
+- Examples of GOOD theme labels: "BYD", "Miniso", "HBM / AI memory", "US IPO market", "China consumer", "Gold", "TSMC", "Netflix".
+- Examples of BAD theme labels (DO NOT do this):
+  - "BYD International sales" → should be theme "BYD", sub_theme "International sales"
+  - "Miniso growth strategy" → should be theme "Miniso", sub_theme "Growth strategy"
+  - "Tesla margins pressure" → should be theme "Tesla", sub_theme "Margins"
+  - "Gold safe-haven demand" → should be theme "Gold", sub_theme "Demand outlook"
+  - "NVIDIA AI revenue" → should be theme "NVIDIA", sub_theme "AI revenue"
+- One theme can have many narratives underneath it; do not split the same topic into multiple themes by appending sub-topics to the label.
+
+Theme rules
+- Primary focus: identify the main subject(s) that occupy a meaningful share of the text (e.g. >30%).
+- Deduplication: if a topic is a subset of another (e.g. "LLMs" vs "AI"), collapse to the higher-level canonical theme unless the document is exclusively about the subset.
+- No meta-themes: never use "Stock Market" or "Macro Trends"; use specific drivers (e.g. "S&P 500 Earnings", "US Treasury Yields").
+- Default one theme per document. Only extract multiple themes when the document explicitly frames itself as cross-sector or outlook ("themes to watch", "outlook across sectors").
+- Entity test: if the document is primarily about a single company, fund, or asset, the theme label must be just that entity's name (e.g. "BYD", not "BYD expansion" or "BYD international sales").
+
+Sub-theme
+- A short label (2–5 words) for the specific dimension, angle, catalyst, or named entity being analyzed within the theme. Sub-themes carry the specificity—they are the place for qualifiers like "international sales", "growth strategy", "margin pressure", etc.
+- Sub-themes fall into two categories:
+  1. Reusable analytical lenses — standard dimensions that recur across documents. 
+  2. Named catalysts or entities — specific legislation, regulations, products, technologies, partnerships, or events that are central to the narrative and likely to recur in future documents. These are trackable proper nouns or named items.
+     - Examples: "GENIUS Act", "CHIPS Act", "GPT-5", "Model Y refresh", "Starlink", "Basel III endgame", "OPEC+ cuts".
+     - Use these when the named entity IS the key driver of the narrative and a generic lens like "Regulation" or "Policy impact" would lose important specificity.
+  3. Company or sector that are poised to benefit or negatively impacted. 
+- Rule: sub-themes must be trackable across future documents — either as a reusable lens or as a named entity/catalyst that will appear in future coverage. If a sub-theme is too ephemeral or one-off, put that content in the narrative text instead.
+- When in doubt, prefer the more specific sub-theme. "GENIUS Act" is better than "Regulation" if the narrative is specifically about that act.
+
+Narrative
+- The claim or change observed through the sub-theme lens—what changed, emerged, or shifted. Must be time-variant (could be false in weeks or months). Include key, relevant quotes from the document as evidence.
+- Lens vs claim: Sub-theme = the lens or catalyst (what aspect or what driver). Narrative = the claim or change through that lens.
+  - Bad: sub_theme "high demand", narrative "Demand remains high".
+  - Good: sub_theme "Demand outlook", narrative "HBM demand is outpacing supply due to AI accelerators adopting higher memory density per chip."
+  - Bad: theme "BYD International sales" (theme has qualifier that belongs in sub-theme).
+  - Good: theme "BYD", sub_theme "International sales", narrative "BYD is rapidly expanding into Southeast Asia and Europe…"
+  - Good: theme "Stablecoins", sub_theme "GENIUS Act", narrative "The GENIUS Act is likely to establish stablecoins as the primary payment method on the internet, enhancing their utility beyond crypto transactions."
+  - Bad: theme "Stablecoins", sub_theme "Regulation", narrative "The GENIUS Act is likely to establish stablecoins as…" (too generic — the specific legislation matters for tracking).
+- For each narrative you must provide:
+  - narrative_stance: "bullish" | "bearish" | "mixed" | "neutral" (so contradictions under the same theme/sub-theme are explicit).
+  - confidence_level: "fact" | "opinion" (fact = based on reported data; opinion = based on analyst view or sentiment; ratings of outperform/underperform by analysts are opinions).
+
+Output valid JSON only per the schema below. No markdown.
+
+Output JSON following this JSON Schema:
+{{schema}}
+
+DOCUMENT TEXT:
+{{text}}

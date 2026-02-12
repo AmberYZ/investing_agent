@@ -1,0 +1,36 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local artifacts
+dev.db
+*.sqlite
+.local_storage/
+watch_pdfs/
+backend/logs/
+*.log
+.env
+
+# Node / Next
+node_modules/
+.next/
+out/
+dist/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+crash.*.log
+

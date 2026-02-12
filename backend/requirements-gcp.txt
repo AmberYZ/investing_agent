@@ -1,0 +1,5 @@
+# Install when using GCS storage or Vertex AI (Gemini/embeddings).
+# Run: pip install -r requirements.txt -r requirements-gcp.txt
+grpcio>=1.60,<2
+google-cloud-storage>=2.18
+google-cloud-aiplatform>=1.67
