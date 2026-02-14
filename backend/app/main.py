@@ -30,13 +30,17 @@ from app.models import (
     Theme,
     ThemeAlias,
     ThemeInstrument,
+    ThemeMergeReinforcement,
     ThemeMentionsDaily,
     ThemeNarrativeSummaryCache,
     ThemeRelationDaily,
     ThemeSubThemeMetrics,
+    ThemeSubThemeMentionsDaily,
 )
 from app.schemas import (
     AdminThemeOut,
+    BasketItemOut,
+    BasketSummaryItemOut,
     CancelIngestJobsOut,
     RequeueIngestJobsOut,
     DocumentExcerptsOut,
@@ -75,14 +79,18 @@ from app.schemas import (
     ThemeNetworkSnapshotsOut,
     ThemeDailyMetricOut,
     ThemeIdLabelOut,
+    ThemeNotesOut,
+    ThemeNotesUpdate,
     ThemeOut,
     ThemeWithNarrativesOut,
     SentimentRankingsOut,
     InflectionsOut,
     ThemeInstrumentOut,
     ThemeInstrumentCreate,
+    InstrumentSummaryOut,
     SuggestInstrumentsOut,
     SuggestedInstrumentItem,
+    ThemeBasketMetricsOut,
 )
 from app.analytics import (
     get_trending_themes,
@@ -97,6 +105,7 @@ from app.settings import settings
 from app.theme_merge import MergeOptions, compute_merge_candidates, execute_theme_merge
 from app.worker import canonicalize_label, ensure_alias
 from app.storage.gcs import GcsStorage, get_storage
+from app.followed_themes import get_followed_theme_ids, follow_theme, unfollow_theme, is_followed
 
 
 # Basic logging
@@ -344,6 +353,209 @@ def list_themes(
         )
         for t, last_updated in rows
     ]
+
+
+@app.post("/themes", response_model=ThemeIdLabelOut)
+def create_theme_user(body: CreateThemeRequest, db: Session = Depends(get_db)):
+    """Create a new theme (user-created). Label is canonicalized. Theme is added to My Basket."""
+    canon = canonicalize_label(body.canonical_label)
+    if not canon:
+        raise HTTPException(status_code=400, detail="Theme label cannot be empty")
+    existing = db.query(Theme).filter(Theme.canonical_label == canon).one_or_none()
+    if existing:
+        follow_theme(existing.id)
+        return ThemeIdLabelOut(id=existing.id, canonical_label=existing.canonical_label)
+    theme = Theme(canonical_label=canon, description=body.description, created_by="user")
+    db.add(theme)
+    db.commit()
+    db.refresh(theme)
+    follow_theme(theme.id)
+    return ThemeIdLabelOut(id=theme.id, canonical_label=theme.canonical_label)
+
+
+@app.get("/themes/followed/ids", response_model=list[int])
+def list_followed_theme_ids():
+    """Return list of followed theme IDs (for UI to show follow state)."""
+    return get_followed_theme_ids()
+
+
+@app.get("/basket", response_model=list[BasketItemOut])
+def get_basket(db: Session = Depends(get_db)):
+    """List followed themes with minimal fields (id, label, description, instrument_count)."""
+    ids = get_followed_theme_ids()
+    if not ids:
+        return []
+    themes = db.query(Theme).filter(Theme.id.in_(ids)).all()
+    theme_by_id = {t.id: t for t in themes}
+    instrument_counts = (
+        db.query(ThemeInstrument.theme_id, func.count(ThemeInstrument.id).label("n"))
+        .filter(ThemeInstrument.theme_id.in_(ids))
+        .group_by(ThemeInstrument.theme_id)
+        .all()
+    )
+    count_by_id = {r.theme_id: r.n for r in instrument_counts}
+    # Preserve order of ids (newest first)
+    return [
+        BasketItemOut(
+            id=theme_by_id[tid].id,
+            canonical_label=theme_by_id[tid].canonical_label,
+            description=theme_by_id[tid].description,
+            instrument_count=count_by_id.get(tid, 0),
+        )
+        for tid in ids
+        if tid in theme_by_id
+    ]
+
+
+@app.post("/themes/{theme_id}/follow")
+def follow_theme_endpoint(theme_id: int, db: Session = Depends(get_db)):
+    """Add theme to My Basket (idempotent)."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    follow_theme(theme_id)
+    return {"followed": True, "theme_id": theme_id}
+
+
+@app.delete("/themes/{theme_id}/follow")
+def unfollow_theme_endpoint(theme_id: int, db: Session = Depends(get_db)):
+    """Remove theme from My Basket (idempotent)."""
+    unfollow_theme(theme_id)
+    return {"followed": False, "theme_id": theme_id}
+
+
+def _theme_primary_symbol(db: Session, theme_id: int) -> str | None:
+    # Single-column query returns the value, not a row
+    symbol = (
+        db.query(ThemeInstrument.symbol)
+        .filter(ThemeInstrument.theme_id == theme_id)
+        .order_by(ThemeInstrument.symbol)
+        .first()
+    )
+    return symbol if symbol is not None else None
+
+
+def _basket_metrics_for_symbol(primary_symbol: str) -> dict:
+    """Fetch all basket metrics for one primary symbol (for lazy-loaded basket)."""
+    from app.market_data import get_prices_and_valuation, compute_period_returns, get_earnings_estimates, get_eps_growth
+    out: dict = {
+        "forward_pe": None,
+        "peg_ratio": None,
+        "latest_rsi": None,
+        "pct_1m": None,
+        "pct_3m": None,
+        "pct_ytd": None,
+        "pct_6m": None,
+        "quarterly_earnings_growth_yoy": None,
+        "quarterly_revenue_growth_yoy": None,
+        "next_fy_eps_estimate": None,
+        "eps_revision_up_30d": None,
+        "eps_revision_down_30d": None,
+        "eps_growth_pct": None,
+    }
+    try:
+        data = get_prices_and_valuation(primary_symbol, months=6)
+        prices = data.get("prices") or []
+        if prices:
+            returns = compute_period_returns(prices)
+            out["pct_1m"] = returns.get("pct_1m")
+            out["pct_3m"] = returns.get("pct_3m")
+            out["pct_ytd"] = returns.get("pct_ytd")
+            out["pct_6m"] = returns.get("pct_6m")
+            last_bar = prices[-1]
+            if isinstance(last_bar.get("rsi_14"), (int, float)):
+                out["latest_rsi"] = round(float(last_bar["rsi_14"]), 2)
+        out["forward_pe"] = data.get("forward_pe")
+        out["peg_ratio"] = data.get("peg_ratio")
+        out["quarterly_earnings_growth_yoy"] = data.get("quarterly_earnings_growth_yoy")
+        out["quarterly_revenue_growth_yoy"] = data.get("quarterly_revenue_growth_yoy")
+        est = get_earnings_estimates(primary_symbol)
+        out["next_fy_eps_estimate"] = est.get("next_fy_eps_estimate")
+        out["eps_revision_up_30d"] = est.get("eps_revision_up_30d")
+        out["eps_revision_down_30d"] = est.get("eps_revision_down_30d")
+        growth = get_eps_growth(primary_symbol)
+        out["eps_growth_pct"] = growth.get("eps_growth_pct")
+    except Exception:
+        pass
+    return out
+
+
+@app.get("/basket/summary", response_model=list[BasketSummaryItemOut])
+def get_basket_summary(
+    db: Session = Depends(get_db),
+    include_metrics: bool = Query(True, description="If false, return theme list only (fast); use /themes/{id}/basket-metrics to load metrics per theme."),
+):
+    """List followed themes. With include_metrics=true (default) fetches valuation per theme (slow). Use include_metrics=false for fast load, then GET /themes/{id}/basket-metrics per theme."""
+    ids = get_followed_theme_ids()
+    if not ids:
+        return []
+    themes = db.query(Theme).filter(Theme.id.in_(ids)).all()
+    theme_by_id = {t.id: t for t in themes}
+    instrument_counts = (
+        db.query(ThemeInstrument.theme_id, func.count(ThemeInstrument.id).label("n"))
+        .filter(ThemeInstrument.theme_id.in_(ids))
+        .group_by(ThemeInstrument.theme_id)
+        .all()
+    )
+    count_by_id = {r.theme_id: r.n for r in instrument_counts}
+    primary_by_id: dict[int, str] = {}
+    for tid, sym in (
+        db.query(ThemeInstrument.theme_id, ThemeInstrument.symbol)
+        .filter(ThemeInstrument.theme_id.in_(ids))
+        .order_by(ThemeInstrument.theme_id, ThemeInstrument.symbol)
+        .all()
+    ):
+        if tid not in primary_by_id:
+            primary_by_id[tid] = sym
+
+    result: list[BasketSummaryItemOut] = []
+    for tid in ids:
+        if tid not in theme_by_id:
+            continue
+        t = theme_by_id[tid]
+        row = BasketSummaryItemOut(
+            id=t.id,
+            canonical_label=t.canonical_label,
+            description=t.description,
+            instrument_count=count_by_id.get(tid, 0),
+        )
+        primary_symbol = primary_by_id.get(tid)
+        if primary_symbol:
+            row.primary_symbol = primary_symbol
+        if include_metrics and primary_symbol:
+            metrics = _basket_metrics_for_symbol(primary_symbol)
+            row.forward_pe = metrics.get("forward_pe")
+            row.peg_ratio = metrics.get("peg_ratio")
+            row.latest_rsi = metrics.get("latest_rsi")
+            row.pct_1m = metrics.get("pct_1m")
+            row.pct_3m = metrics.get("pct_3m")
+            row.pct_ytd = metrics.get("pct_ytd")
+            row.pct_6m = metrics.get("pct_6m")
+            row.quarterly_earnings_growth_yoy = metrics.get("quarterly_earnings_growth_yoy")
+            row.quarterly_revenue_growth_yoy = metrics.get("quarterly_revenue_growth_yoy")
+            row.next_fy_eps_estimate = metrics.get("next_fy_eps_estimate")
+            row.eps_revision_up_30d = metrics.get("eps_revision_up_30d")
+            row.eps_revision_down_30d = metrics.get("eps_revision_down_30d")
+            row.eps_growth_pct = metrics.get("eps_growth_pct")
+        result.append(row)
+    return result
+
+
+@app.get("/themes/{theme_id}/basket-metrics", response_model=ThemeBasketMetricsOut)
+def get_theme_basket_metrics(theme_id: int, db: Session = Depends(get_db)):
+    """Metrics for this theme's primary ticker (for lazy-loaded basket). Call after GET /basket/summary?include_metrics=false."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    primary_symbol = _theme_primary_symbol(db, theme_id)
+    if not primary_symbol:
+        return ThemeBasketMetricsOut(theme_id=theme_id)
+    metrics = _basket_metrics_for_symbol(primary_symbol)
+    return ThemeBasketMetricsOut(
+        theme_id=theme_id,
+        primary_symbol=primary_symbol,
+        **{k: v for k, v in metrics.items() if k in ThemeBasketMetricsOut.model_fields},
+    )
 
 
 @app.get("/themes/contrarian-recent", response_model=list[ThemeIdLabelOut])
@@ -628,6 +840,27 @@ def get_batch_narrative_summaries(
                 inflection_alert=ext.inflection_alert,
             )
     return out
+
+
+@app.get("/themes/{theme_id}/notes", response_model=ThemeNotesOut)
+def get_theme_notes(theme_id: int, db: Session = Depends(get_db)):
+    """Get user notes for this theme."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    return ThemeNotesOut(content=theme.user_notes)
+
+
+@app.patch("/themes/{theme_id}/notes", response_model=ThemeNotesOut)
+def patch_theme_notes(theme_id: int, body: ThemeNotesUpdate, db: Session = Depends(get_db)):
+    """Update user notes for this theme (upsert)."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    theme.user_notes = body.content if body.content is not None else theme.user_notes
+    db.commit()
+    db.refresh(theme)
+    return ThemeNotesOut(content=theme.user_notes)
 
 
 @app.get("/themes/{theme_id}", response_model=ThemeWithNarrativesOut)
@@ -1128,6 +1361,54 @@ def list_theme_instruments(theme_id: int, db: Session = Depends(get_db)):
     ]
 
 
+@app.get("/themes/{theme_id}/instruments/summary", response_model=list[InstrumentSummaryOut])
+def list_theme_instruments_summary(theme_id: int, db: Session = Depends(get_db)):
+    """List instruments for this theme with price and valuation metrics (for basket ticker rows)."""
+    from app.market_data import get_prices_and_valuation, compute_period_returns, get_earnings_estimates, get_eps_growth
+
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    rows = db.query(ThemeInstrument).filter(ThemeInstrument.theme_id == theme_id).order_by(ThemeInstrument.symbol).all()
+    result: list[InstrumentSummaryOut] = []
+    for r in rows:
+        row = InstrumentSummaryOut(
+            id=r.id,
+            symbol=r.symbol,
+            display_name=r.display_name,
+            type=r.type or "stock",
+            source=r.source or "manual",
+        )
+        try:
+            data = get_prices_and_valuation(r.symbol, months=6)
+            prices = data.get("prices") or []
+            if prices:
+                returns = compute_period_returns(prices)
+                row.pct_1m = returns.get("pct_1m")
+                row.pct_3m = returns.get("pct_3m")
+                row.pct_ytd = returns.get("pct_ytd")
+                last_bar = prices[-1]
+                row.last_close = float(last_bar.get("close", 0)) if last_bar.get("close") is not None else None
+                if isinstance(last_bar.get("rsi_14"), (int, float)):
+                    row.latest_rsi = round(float(last_bar["rsi_14"]), 2)
+            row.forward_pe = data.get("forward_pe")
+            row.peg_ratio = data.get("peg_ratio")
+            row.quarterly_earnings_growth_yoy = data.get("quarterly_earnings_growth_yoy")
+            row.quarterly_revenue_growth_yoy = data.get("quarterly_revenue_growth_yoy")
+            if data.get("message"):
+                row.message = data["message"]
+            est = get_earnings_estimates(r.symbol)
+            row.next_fy_eps_estimate = est.get("next_fy_eps_estimate")
+            row.eps_revision_up_30d = est.get("eps_revision_up_30d")
+            row.eps_revision_down_30d = est.get("eps_revision_down_30d")
+            growth = get_eps_growth(r.symbol)
+            row.eps_growth_pct = growth.get("eps_growth_pct")
+        except Exception:
+            pass
+        result.append(row)
+    return result
+
+
 @app.post("/themes/{theme_id}/instruments", response_model=ThemeInstrumentOut)
 def add_theme_instrument(
     theme_id: int,
@@ -1175,9 +1456,22 @@ def delete_theme_instrument(
     return {"ok": True}
 
 
+@app.get("/themes/{theme_id}/instruments/from-documents/suggest", response_model=SuggestInstrumentsOut)
+def suggest_theme_instruments_from_documents(theme_id: int, db: Session = Depends(get_db)):
+    """Suggest tickers found in theme evidence (regex + LLM); no DB write. User adds via POST /instruments with source=from_documents."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    from app.instruments import suggest_instruments_from_documents
+    items = suggest_instruments_from_documents(db, theme_id)
+    return SuggestInstrumentsOut(
+        suggestions=[SuggestedInstrumentItem(symbol=x["symbol"], display_name=x.get("display_name"), type=x.get("type") or "stock") for x in items]
+    )
+
+
 @app.post("/themes/{theme_id}/instruments/from-documents", response_model=list[ThemeInstrumentOut])
 def add_theme_instruments_from_documents(theme_id: int, db: Session = Depends(get_db)):
-    """Scan theme evidence for ticker mentions and add them with source=from_documents."""
+    """Scan theme evidence for ticker mentions and add all with source=from_documents. Prefer GET .../from-documents/suggest + user choice."""
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
@@ -1207,9 +1501,27 @@ def get_instrument_prices(
     symbol: str,
     months: int = Query(6, ge=1, le=12),
 ):
-    """Price history, valuation (trailing/forward PE), and technical indicators (SMA, RSI, MACD) via Alpha Vantage."""
-    from app.market_data import get_prices_and_valuation
-    return get_prices_and_valuation(symbol, months=months)
+    """Price history, valuation (trailing/forward PE, PEG), earnings estimates, EPS growth, and technical indicators via Alpha Vantage."""
+    from app.market_data import get_prices_and_valuation, get_earnings_estimates, get_eps_growth
+    out = dict(get_prices_and_valuation(symbol, months=months))
+    est = get_earnings_estimates(symbol)
+    out["next_fy_eps_estimate"] = est.get("next_fy_eps_estimate")
+    out["eps_revision_up_30d"] = est.get("eps_revision_up_30d")
+    out["eps_revision_down_30d"] = est.get("eps_revision_down_30d")
+    growth = get_eps_growth(symbol)
+    out["eps_growth_pct"] = growth.get("eps_growth_pct")
+    out["trailing_12m_eps"] = growth.get("trailing_12m_eps")
+    return out
+
+
+@app.get("/instruments/{symbol}/historical-pe")
+def get_instrument_historical_pe(
+    symbol: str,
+    months: int = Query(24, ge=6, le=60),
+):
+    """Historical trailing P/E series (daily close / trailing 4Q EPS) and current PE percentile for chart."""
+    from app.market_data import get_historical_pe
+    return get_historical_pe(symbol, months=months)
 
 
 @app.get("/themes/{theme_id}/metrics-by-stance", response_model=list[ThemeMetricsByStanceOut])
@@ -1412,15 +1724,42 @@ def get_theme_narratives(
     theme_id: int,
     date: Optional[str] = Query(None, description="'today' to list narratives that got evidence today (newest first)"),
     since: Optional[str] = Query(None, description="ISO date (YYYY-MM-DD) to list narratives with evidence on or after this date"),
+    limit: Optional[int] = Query(None, ge=1, le=500, description="Max number of narratives to return (newest first)"),
+    on_latest_date: bool = Query(False, description="If true, return all narratives with evidence on the theme's most recent activity date (no limit)"),
     db: Session = Depends(get_db),
 ):
-    """List narratives for this theme. With date=today or since=... returns only narratives with evidence on that day(s), newest first, with evidence."""
+    """List narratives for this theme. With date=today or since=... returns only narratives with evidence on that day(s), newest first, with evidence. With on_latest_date=true returns all narratives on the most recent date."""
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
     doc_date = func.date(_doc_timestamp())
     theme_narrative_ids = [r[0] for r in db.query(Narrative.id).filter(Narrative.theme_id == theme_id).all()]
-    if date == "today":
+    if on_latest_date:
+        # Find the most recent document date for this theme, then all narratives with evidence on that date
+        max_date_row = (
+            db.query(func.max(doc_date).label("max_d"))
+            .select_from(Evidence)
+            .join(Document, Document.id == Evidence.document_id)
+            .filter(Evidence.narrative_id.in_(theme_narrative_ids))
+            .first()
+        )
+        if not max_date_row or max_date_row.max_d is None:
+            narrative_ids = []
+        else:
+            latest_d = max_date_row.max_d
+            if isinstance(latest_d, dt.datetime):
+                latest_d = latest_d.date()
+            elif isinstance(latest_d, str):
+                latest_d = dt.datetime.strptime(latest_d[:10], "%Y-%m-%d").date()
+            narrative_ids = [
+                r[0]
+                for r in db.query(Evidence.narrative_id)
+                .join(Document, Document.id == Evidence.document_id)
+                .filter(Evidence.narrative_id.in_(theme_narrative_ids), doc_date == latest_d)
+                .distinct()
+                .all()
+            ]
+    elif date == "today":
         today = dt.date.today()
         narrative_ids = [
             r[0]
@@ -1449,13 +1788,15 @@ def get_theme_narratives(
     if not narrative_ids:
         return []
 
-    # Order by last_seen desc (newest first)
-    narratives = (
+    # Order by last_seen desc (newest first). When on_latest_date, do not apply limit.
+    q = (
         db.query(Narrative)
         .filter(Narrative.id.in_(narrative_ids))
         .order_by(Narrative.last_seen.desc())
-        .all()
     )
+    if limit is not None and not on_latest_date:
+        q = q.limit(limit)
+    narratives = q.all()
     earliest_doc = (
         db.query(Evidence.narrative_id, func.min(doc_date).label("earliest"))
         .join(Document, Document.id == Evidence.document_id)
@@ -1681,7 +2022,7 @@ def create_theme(body: CreateThemeRequest, db: Session = Depends(get_db)) -> The
     existing = db.query(Theme).filter(Theme.canonical_label == canon).one_or_none()
     if existing:
         return ThemeIdLabelOut(id=existing.id, canonical_label=existing.canonical_label)
-    theme = Theme(canonical_label=canon, description=body.description)
+    theme = Theme(canonical_label=canon, description=body.description, created_by="system")
     db.add(theme)
     db.commit()
     db.refresh(theme)
@@ -1710,6 +2051,31 @@ def patch_theme(theme_id: int, body: PatchThemeRequest, db: Session = Depends(ge
     db.commit()
     db.refresh(theme)
     return ThemeIdLabelOut(id=theme.id, canonical_label=theme.canonical_label)
+
+
+@app.delete("/admin/themes/{theme_id}")
+def delete_theme(theme_id: int, db: Session = Depends(get_db)):
+    """Delete a theme and all related data (narratives, evidence, aliases, instruments, daily stats, etc.)."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if not theme:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    # Delete tables that reference theme_id but are not ORM cascade from Theme
+    db.query(ThemeMergeReinforcement).filter(ThemeMergeReinforcement.target_theme_id == theme_id).delete(
+        synchronize_session="fetch"
+    )
+    db.query(ThemeMentionsDaily).filter(ThemeMentionsDaily.theme_id == theme_id).delete(synchronize_session="fetch")
+    db.query(ThemeRelationDaily).filter(ThemeRelationDaily.theme_id == theme_id).delete(synchronize_session="fetch")
+    db.query(ThemeSubThemeMetrics).filter(ThemeSubThemeMetrics.theme_id == theme_id).delete(synchronize_session="fetch")
+    db.query(ThemeSubThemeMentionsDaily).filter(ThemeSubThemeMentionsDaily.theme_id == theme_id).delete(
+        synchronize_session="fetch"
+    )
+    db.query(ThemeNarrativeSummaryCache).filter(ThemeNarrativeSummaryCache.theme_id == theme_id).delete(
+        synchronize_session="fetch"
+    )
+    unfollow_theme(theme_id)
+    db.delete(theme)
+    db.commit()
+    return Response(status_code=204)
 
 
 @app.get("/admin/themes/diagnostic")

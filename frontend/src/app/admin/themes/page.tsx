@@ -39,6 +39,7 @@ export default function AdminThemesPage() {
   const [error, setError] = useState<string | null>(null);
   const [renameThemeId, setRenameThemeId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [deleteLoading, setDeleteLoading] = useState<number | null>(null);
 
   const loadThemes = useCallback(async () => {
     setLoading(true);
@@ -130,6 +131,24 @@ export default function AdminThemesPage() {
   function cancelRename() {
     setRenameThemeId(null);
     setRenameValue("");
+  }
+
+  async function deleteTheme(t: AdminTheme) {
+    if (!confirm(`Delete theme "${t.canonical_label}" (ID ${t.id})? This will remove the theme and all its narratives, evidence, and related data. This cannot be undone.`)) return;
+    setDeleteLoading(t.id);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/admin/themes/${t.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(typeof err?.detail === "string" ? err.detail : `Delete failed: ${res.status}`);
+      }
+      await loadThemes();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setDeleteLoading(null);
+    }
   }
 
   async function runMerge(group: SuggestGroup) {
@@ -244,6 +263,15 @@ export default function AdminThemesPage() {
                             className="text-blue-600 hover:underline dark:text-blue-400"
                           >
                             Rename
+                          </button>
+                          {" · "}
+                          <button
+                            type="button"
+                            onClick={() => deleteTheme(t)}
+                            disabled={deleteLoading !== null}
+                            className="text-red-600 hover:underline dark:text-red-400 disabled:opacity-50"
+                          >
+                            {deleteLoading === t.id ? "Deleting…" : "Delete"}
                           </button>
                         </>
                       )}

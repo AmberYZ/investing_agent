@@ -80,6 +80,10 @@ class Settings(BaseSettings):
 
     # Market data (stocks/ETFs): Alpha Vantage for price chart and valuation (trailing/forward PE).
     alpha_vantage_api_key: str = ""
+    # In-memory cache TTL for AV responses (seconds). Default 2 hours; increase to reduce API calls.
+    alpha_vantage_cache_ttl_seconds: int = 7200
+    # Min seconds between AV API requests (throttle). 75/min = 0.8s; 1.0 keeps under limit with headroom.
+    alpha_vantage_min_seconds_between_requests: float = 1.0
 
     # Optional: write backend logs to this file (worker + API). Leave empty for stdout only.
     log_file: str = ""

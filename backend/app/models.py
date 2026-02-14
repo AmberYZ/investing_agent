@@ -88,6 +88,10 @@ class Theme(Base):
     canonical_label: Mapped[str] = mapped_column(String(256), unique=True, index=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc))
+    # system = auto-extracted or admin-created; user = created via "Create theme" in app
+    created_by: Mapped[str] = mapped_column(String(32), default="system", index=True)
+    # User-editable notes for this theme (single note per theme in MVP).
+    user_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Embedding of canonical_label for semantic similarity (theme deduplication).
     embedding: Mapped[Optional[List[float]]] = mapped_column(JSON, nullable=True)
 

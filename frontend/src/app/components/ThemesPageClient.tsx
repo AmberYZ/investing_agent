@@ -195,6 +195,14 @@ export function ThemesPageClient({
     most_crowded: Theme[];
   } | null>(null);
   const [inflectionCategory, setInflectionCategory] = useState<InflectionCategory>("bullish_turning_neutral_bearish");
+  const [followedIds, setFollowedIds] = useState<Set<number>>(new Set());
+
+  const refreshFollowedIds = useCallback(() => {
+    fetch(`${API_BASE}/themes/followed/ids`, { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((ids: number[]) => setFollowedIds(new Set(Array.isArray(ids) ? ids : [])))
+      .catch(() => setFollowedIds(new Set()));
+  }, []);
 
   const refreshReadData = useCallback(() => {
     fetchReadThemeDataFromAPI(API_BASE)
@@ -210,7 +218,8 @@ export function ThemesPageClient({
 
   useLayoutEffect(() => {
     refreshReadData();
-  }, [refreshReadData]);
+    refreshFollowedIds();
+  }, [refreshReadData, refreshFollowedIds]);
 
   useEffect(() => {
     window.addEventListener(READ_THEME_DATA_UPDATED_EVENT, refreshReadData);
@@ -567,6 +576,8 @@ export function ThemesPageClient({
               metricsMap={metricsMap}
               readData={readData}
               allDismissedAt={allDismissedAt}
+              followedIds={followedIds}
+              onFollowToggle={(_, __) => refreshFollowedIds()}
             />
           </div>
         ) : (
@@ -575,6 +586,8 @@ export function ThemesPageClient({
             metricsMap={metricsMap}
             readData={readData}
             allDismissedAt={allDismissedAt}
+            followedIds={followedIds}
+            onFollowToggle={(_, __) => refreshFollowedIds()}
           />
         )}
       </div>

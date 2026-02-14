@@ -86,6 +86,59 @@ class ThemeIdLabelOut(BaseModel):
     canonical_label: str
 
 
+class BasketItemOut(BaseModel):
+    """Theme row for My Basket list (followed themes)."""
+    id: int
+    canonical_label: str
+    description: Optional[str] = None
+    instrument_count: int = 0
+
+
+class ThemeNotesOut(BaseModel):
+    content: Optional[str] = None
+
+
+class ThemeNotesUpdate(BaseModel):
+    content: Optional[str] = None
+
+
+class BasketSummaryItemOut(BasketItemOut):
+    """Basket row with optional price/valuation metrics (from primary ticker)."""
+    primary_symbol: Optional[str] = None
+    forward_pe: Optional[float] = None
+    peg_ratio: Optional[float] = None
+    latest_rsi: Optional[float] = None
+    pct_1m: Optional[float] = None
+    pct_3m: Optional[float] = None
+    pct_ytd: Optional[float] = None
+    pct_6m: Optional[float] = None
+    quarterly_earnings_growth_yoy: Optional[float] = None
+    quarterly_revenue_growth_yoy: Optional[float] = None
+    next_fy_eps_estimate: Optional[float] = None
+    eps_revision_up_30d: Optional[int] = None
+    eps_revision_down_30d: Optional[int] = None
+    eps_growth_pct: Optional[float] = None
+
+
+class ThemeBasketMetricsOut(BaseModel):
+    """Metrics for one theme's primary ticker (for lazy-loaded basket)."""
+    theme_id: int
+    primary_symbol: Optional[str] = None
+    forward_pe: Optional[float] = None
+    peg_ratio: Optional[float] = None
+    latest_rsi: Optional[float] = None
+    pct_1m: Optional[float] = None
+    pct_3m: Optional[float] = None
+    pct_ytd: Optional[float] = None
+    pct_6m: Optional[float] = None
+    quarterly_earnings_growth_yoy: Optional[float] = None
+    quarterly_revenue_growth_yoy: Optional[float] = None
+    next_fy_eps_estimate: Optional[float] = None
+    eps_revision_up_30d: Optional[int] = None
+    eps_revision_down_30d: Optional[int] = None
+    eps_growth_pct: Optional[float] = None
+
+
 class AdminThemeOut(BaseModel):
     """Theme with metadata for admin theme list and merge."""
     id: int
@@ -377,4 +430,27 @@ class SuggestedInstrumentItem(BaseModel):
 class SuggestInstrumentsOut(BaseModel):
     """LLM-suggested tickers for a theme (not yet persisted)."""
     suggestions: list[SuggestedInstrumentItem] = Field(default_factory=list)
+
+
+class InstrumentSummaryOut(BaseModel):
+    """Instrument with price and valuation metrics for basket ticker rows."""
+    id: int
+    symbol: str
+    display_name: Optional[str] = None
+    type: str = "stock"
+    source: str = "manual"
+    last_close: Optional[float] = None
+    pct_1m: Optional[float] = None
+    pct_3m: Optional[float] = None
+    pct_ytd: Optional[float] = None
+    forward_pe: Optional[float] = None
+    peg_ratio: Optional[float] = None
+    latest_rsi: Optional[float] = None
+    quarterly_earnings_growth_yoy: Optional[float] = None
+    quarterly_revenue_growth_yoy: Optional[float] = None
+    next_fy_eps_estimate: Optional[float] = None
+    eps_revision_up_30d: Optional[int] = None
+    eps_revision_down_30d: Optional[int] = None
+    eps_growth_pct: Optional[float] = None
+    message: Optional[str] = None
 

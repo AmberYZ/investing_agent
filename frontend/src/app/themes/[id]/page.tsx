@@ -1,8 +1,10 @@
 import Link from "next/link";
+import { FollowThemeButtonWrapper } from "./FollowThemeButtonWrapper";
 import { MarkThemeAsRead } from "./MarkThemeAsRead";
 import { ThemeChartAndDayDocs } from "./ThemeChartAndDayDocs";
 import { ThemeConfidenceChart } from "./ThemeConfidenceChart";
 import { ThemeInstruments } from "./ThemeInstruments";
+import { ThemeNotes } from "./ThemeNotes";
 import { ThemeStanceChart } from "./ThemeStanceChart";
 import { TodaysNarratives } from "./TodaysNarratives";
 
@@ -227,6 +229,7 @@ export default async function ThemePage(
             </p>
           </div>
           <div className="flex flex-col items-end gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+            <FollowThemeButtonWrapper themeId={theme.id} />
             <div className="flex items-center gap-2">
               <span>Range:</span>
               <Link
@@ -310,6 +313,9 @@ export default async function ThemePage(
 
         {/* Related stocks & ETFs: click ticker for price chart, valuation, narrative overlay */}
         <ThemeInstruments themeId={id} />
+
+        {/* User notes */}
+        <ThemeNotes themeId={id} />
 
         {/* 3) Share of voice over time (with optional stacked by sub-theme in ThemeChartAndDayDocs) */}
         <ThemeChartAndDayDocs

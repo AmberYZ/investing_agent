@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
+import { FollowThemeButton } from "./FollowThemeButton";
 import { ThemeCardChart } from "./ThemeCardChart";
 
 type ThemeMetric = {
@@ -60,12 +61,16 @@ export function ThemeCardGrid({
   metricsMap,
   readData,
   allDismissedAt = null,
+  followedIds = new Set<number>(),
+  onFollowToggle,
 }: {
   list: Theme[];
   metricsMap: Record<number, ThemeMetric[]>;
   readData: Record<number, string>;
   /** Single switch: when set, theme is "read" if last_updated <= this time. */
   allDismissedAt?: string | null;
+  followedIds?: Set<number>;
+  onFollowToggle?: (themeId: number, followed: boolean) => void;
 }) {
   const allDates = useMemo(() => getAllDates(metricsMap), [metricsMap]);
 
@@ -149,13 +154,21 @@ export function ThemeCardGrid({
                 : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"
             }`}
           >
-            {hasRecentActivity && (
-              <span
-                className="absolute right-3 top-3 h-2 w-2 rounded-full bg-emerald-500 dark:bg-emerald-400"
-                title="Unread"
-                aria-hidden
+            <div className="absolute right-2 top-2 z-10 flex items-center gap-1">
+              {hasRecentActivity && (
+                <span
+                  className="h-2 w-2 rounded-full bg-emerald-500 dark:bg-emerald-400"
+                  title="Unread"
+                  aria-hidden
+                />
+              )}
+              <FollowThemeButton
+                themeId={themeId}
+                followed={followedIds.has(themeId)}
+                onToggle={onFollowToggle}
+                variant="compact"
               />
-            )}
+            </div>
             <div className="flex items-center gap-2">
               <div className="text-sm font-semibold">{t.canonical_label}</div>
             </div>

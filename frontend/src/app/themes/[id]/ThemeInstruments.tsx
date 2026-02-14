@@ -53,6 +53,25 @@ type InstrumentQuote = {
   forward_pe?: number | null;
   peg_ratio?: number | null;
   ev_to_ebitda?: number | null;
+  next_fy_eps_estimate?: number | null;
+  eps_revision_up_30d?: number | null;
+  eps_revision_down_30d?: number | null;
+  eps_growth_pct?: number | null;
+  message?: string | null;
+};
+
+type HistoricalPESeries = {
+  date: string;
+  pe: number;
+  close: number;
+  trailing_12m_eps: number;
+};
+
+type HistoricalPEResponse = {
+  symbol: string;
+  series: HistoricalPESeries[];
+  current_pe: number | null;
+  pe_percentile: number | null;
   message?: string | null;
 };
 
@@ -123,11 +142,15 @@ export function ThemeInstruments({ themeId }: { themeId: string }) {
   const [fromDocsLoading, setFromDocsLoading] = useState(false);
   const [suggestions, setSuggestions] = useState<SuggestedItem[]>([]);
   const [suggestLoading, setSuggestLoading] = useState(false);
+  const [fromDocSuggestions, setFromDocSuggestions] = useState<SuggestedItem[]>([]);
+  const [fromDocsSuggestLoading, setFromDocsSuggestLoading] = useState(false);
 
   const [viewMode, setViewMode] = useState<"single" | "basket">("single");
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [quote, setQuote] = useState<InstrumentQuote | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
+  const [histPe, setHistPe] = useState<HistoricalPEResponse | null>(null);
+  const [histPeLoading, setHistPeLoading] = useState(false);
   const [narrativeOverlay, setNarrativeOverlay] = useState(false);
   const [stanceData, setStanceData] = useState<ThemeMetricsByStance[]>([]);
 
@@ -181,12 +204,28 @@ export function ThemeInstruments({ themeId }: { themeId: string }) {
     if (viewMode !== "single" || !selectedSymbol) return;
     setQuoteLoading(true);
     setQuote(null);
+    setHistPe(null);
     Promise.all([loadQuote(selectedSymbol), loadStance()]).then(([q, stance]) => {
       if (q) setQuote(q);
       setStanceData(Array.isArray(stance) ? stance : []);
       setQuoteLoading(false);
     });
   }, [viewMode, selectedSymbol, loadQuote, loadStance]);
+
+  useEffect(() => {
+    if (viewMode !== "single" || !selectedSymbol) {
+      setHistPe(null);
+      return;
+    }
+    setHistPeLoading(true);
+    setHistPe(null);
+    fetch(`${API_BASE}/instruments/${encodeURIComponent(selectedSymbol)}/historical-pe?months=24`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: HistoricalPEResponse | null) => {
+        setHistPe(data ?? null);
+      })
+      .finally(() => setHistPeLoading(false));
+  }, [viewMode, selectedSymbol]);
 
   const handleTickerClick = (symbol: string) => {
     setViewMode("single");
@@ -219,13 +258,35 @@ export function ThemeInstruments({ themeId }: { themeId: string }) {
     if (res.ok) await fetchInstruments();
   };
 
-  const handleFromDocuments = async () => {
-    setFromDocsLoading(true);
+  const handleFindInDocuments = async () => {
+    setFromDocsSuggestLoading(true);
+    setFromDocSuggestions([]);
     try {
-      const res = await fetch(`${API_BASE}/themes/${themeId}/instruments/from-documents`, { method: "POST" });
-      if (res.ok) await fetchInstruments();
+      const res = await fetch(`${API_BASE}/themes/${themeId}/instruments/from-documents/suggest`);
+      if (res.ok) {
+        const data = await res.json();
+        setFromDocSuggestions(data.suggestions ?? []);
+      }
     } finally {
-      setFromDocsLoading(false);
+      setFromDocsSuggestLoading(false);
+    }
+  };
+
+  const handleAddFromDocSuggested = async (e: React.MouseEvent, item: SuggestedItem) => {
+    e.stopPropagation();
+    const res = await fetch(`${API_BASE}/themes/${themeId}/instruments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbol: item.symbol,
+        display_name: item.display_name ?? null,
+        type: item.type || "stock",
+        source: "from_documents",
+      }),
+    });
+    if (res.ok) {
+      setFromDocSuggestions((prev) => prev.filter((s) => s.symbol !== item.symbol));
+      await fetchInstruments();
     }
   };
 
@@ -292,7 +353,7 @@ export function ThemeInstruments({ themeId }: { themeId: string }) {
     loadAll();
   }, [viewMode, instruments, loadQuote]);
 
-  const hasInstruments = instruments.length > 0 || suggestions.length > 0;
+  const hasInstruments = instruments.length > 0 || suggestions.length > 0 || fromDocSuggestions.length > 0;
 
   return (
     <section className="mt-8 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
@@ -320,11 +381,11 @@ export function ThemeInstruments({ themeId }: { themeId: string }) {
         </button>
         <button
           type="button"
-          onClick={handleFromDocuments}
-          disabled={fromDocsLoading}
+          onClick={handleFindInDocuments}
+          disabled={fromDocsSuggestLoading}
           className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
         >
-          {fromDocsLoading ? "Scanning…" : "Find in documents"}
+          {fromDocsSuggestLoading ? "Scanning…" : "Find in documents"}
         </button>
         <button
           type="button"
@@ -397,11 +458,22 @@ export function ThemeInstruments({ themeId }: { themeId: string }) {
             ))}
             {suggestions.map((s) => (
               <div
-                key={s.symbol}
+                key={`llm-${s.symbol}`}
                 className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${SOURCE_STYLES.llm_suggested}`}
               >
                 <span>{s.symbol}</span>
                 <button type="button" onClick={(e) => handleAddSuggested(e, s)} className="ml-0.5 rounded-full p-0.5 hover:bg-black/10 dark:hover:bg-white/10">
+                  Add
+                </button>
+              </div>
+            ))}
+            {fromDocSuggestions.map((s) => (
+              <div
+                key={`doc-${s.symbol}`}
+                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${SOURCE_STYLES.from_documents}`}
+              >
+                <span title={s.display_name ?? undefined}>{s.symbol}</span>
+                <button type="button" onClick={(e) => handleAddFromDocSuggested(e, s)} className="ml-0.5 rounded-full p-0.5 hover:bg-black/10 dark:hover:bg-white/10">
                   Add
                 </button>
               </div>
@@ -442,6 +514,12 @@ export function ThemeInstruments({ themeId }: { themeId: string }) {
                       {quote.forward_pe != null && <span>Forward P/E: <strong>{quote.forward_pe}</strong></span>}
                       {quote.peg_ratio != null && <span>PEG: <strong>{quote.peg_ratio}</strong></span>}
                       {quote.ev_to_ebitda != null && <span>EV/EBITDA: <strong>{quote.ev_to_ebitda}</strong></span>}
+                      {quote.eps_growth_pct != null && <span>EPS growth (Fwd vs Trail 12M): <strong>{quote.eps_growth_pct}%</strong></span>}
+                      {quote.next_fy_eps_estimate != null && <span>Next FY EPS: <strong>{quote.next_fy_eps_estimate}</strong></span>}
+                      {quote.eps_revision_up_30d != null && <span className="text-emerald-600 dark:text-emerald-400">Rev ↑ 30d: <strong>{quote.eps_revision_up_30d}</strong></span>}
+                      {quote.eps_revision_down_30d != null && <span className="text-red-600 dark:text-red-400">Rev ↓ 30d: <strong>{quote.eps_revision_down_30d}</strong></span>}
+                      {histPe?.current_pe != null && <span>Current P/E (trailing): <strong>{histPe.current_pe}</strong></span>}
+                      {histPe?.pe_percentile != null && <span>P/E percentile (hist.): <strong>{histPe.pe_percentile}%</strong></span>}
                     </div>
                   )}
                 </div>
@@ -519,6 +597,22 @@ export function ThemeInstruments({ themeId }: { themeId: string }) {
                         <span style={{ color: STANCE_COLORS.mixed }}>Mixed</span>
                         <span style={{ color: STANCE_COLORS.neutral }}>Neutral</span>
                         <span className="text-zinc-500">(dashed lines = narrative dates)</span>
+                      </div>
+                    )}
+                    {histPeLoading && <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">Loading historical P/E…</p>}
+                    {!histPeLoading && histPe && (histPe.series?.length ?? 0) > 0 && (
+                      <div className="mt-4 border-t border-zinc-200 pt-4 dark:border-zinc-700">
+                        <p className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400">Historical trailing P/E (close ÷ trailing 4Q EPS)</p>
+                        <div className="mt-2 h-32 w-full">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <ComposedChart data={histPe.series} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
+                              <XAxis dataKey="date" tick={{ fontSize: 9 }} tickFormatter={(v) => (v && String(v).slice(5)) || v} />
+                              <YAxis tick={{ fontSize: 9 }} width={32} domain={["auto", "auto"]} />
+                              <Tooltip content={({ active, payload }) => (active && payload?.[0] ? <div className="rounded border bg-white p-2 text-xs shadow dark:bg-zinc-900">{payload[0].payload.date}: P/E {Number(payload[0].value).toFixed(1)}</div> : null)} />
+                              <Line type="monotone" dataKey="pe" stroke="#8b5cf6" strokeWidth={2} dot={false} name="P/E" />
+                            </ComposedChart>
+                          </ResponsiveContainer>
+                        </div>
                       </div>
                     )}
                   </>

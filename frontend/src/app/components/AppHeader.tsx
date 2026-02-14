@@ -53,6 +53,7 @@ function HomeIcon() {
 export function AppHeader() {
   const pathname = usePathname();
   const isThemes = pathname === "/";
+  const isBasket = pathname?.startsWith("/basket") ?? false;
   const isNetwork = pathname?.startsWith("/themes/network") ?? false;
   const isAdmin = pathname?.startsWith("/admin") ?? false;
 
@@ -77,6 +78,16 @@ export function AppHeader() {
             }`}
           >
             Themes
+          </Link>
+          <Link
+            href="/basket"
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+              isBasket
+                ? "bg-zinc-200 text-zinc-900 dark:bg-zinc-700 dark:text-zinc-100"
+                : "text-zinc-600 hover:bg-zinc-200 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+            }`}
+          >
+            My Basket
           </Link>
           <Link
             href="/themes/network"
