@@ -15,7 +15,8 @@ from prometheus_client import Counter, Histogram
 from app.db import SessionLocal, engine, init_db
 from app.extract.chunking import chunk_pages
 from app.extract.disclosure_trim import trim_disclosure_sections
-from app.extract.pdf_text import extract_text_from_pdf
+from app.extract.html_text import html_to_plain_text
+from app.extract.pdf_text import PageText, extract_text_from_pdf
 from app.llm.api_extract import extract_themes_and_narratives as extract_via_llm_api
 from app.llm.heuristic import heuristic_extract
 from app.llm.embeddings import embed_texts, is_embedding_available
@@ -378,11 +379,27 @@ def process_job(db: Session, job: IngestJob) -> None:
 
 
 def _process_job_inner(db: Session, job: IngestJob, doc: Document, storage) -> None:
-    logger.info("job_id=%s doc_id=%s filename=%s: downloading PDF", job.id, doc.id, doc.filename)
-    pdf_bytes = storage.download_bytes(uri=doc.gcs_raw_uri)
-    pages, num_pages = extract_text_from_pdf(pdf_bytes)
-    doc.num_pages = num_pages
-    logger.info("job_id=%s doc_id=%s: extracted text from %s pages", job.id, doc.id, num_pages)
+    raw_bytes = storage.download_bytes(uri=doc.gcs_raw_uri)
+    content_type = getattr(doc, "content_type", "application/pdf") or "application/pdf"
+
+    if content_type in ("text/html", "text/plain"):
+        logger.info("job_id=%s doc_id=%s filename=%s: processing text/HTML", job.id, doc.id, doc.filename)
+        if content_type == "text/html":
+            text = html_to_plain_text(raw_bytes)
+        else:
+            try:
+                text = raw_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                text = raw_bytes.decode("latin-1", errors="replace")
+        pages: list[PageText] = [PageText(page=1, text=text)]
+        num_pages = 1
+        doc.num_pages = num_pages
+        logger.info("job_id=%s doc_id=%s: extracted text from 1 segment (%d chars)", job.id, doc.id, len(text))
+    else:
+        logger.info("job_id=%s doc_id=%s filename=%s: downloading PDF", job.id, doc.id, doc.filename)
+        pages, num_pages = extract_text_from_pdf(raw_bytes)
+        doc.num_pages = num_pages
+        logger.info("job_id=%s doc_id=%s: extracted text from %s pages", job.id, doc.id, num_pages)
 
     # Persist extracted full text artifact (for debugging + future reprocessing)
     full_text = "\n\n".join([f"[Page {p.page}]\n{p.text}".strip() for p in pages if p.text.strip()])

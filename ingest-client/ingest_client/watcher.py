@@ -6,7 +6,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 import requests
 from dotenv import load_dotenv
@@ -20,8 +20,8 @@ def _file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _fetch_watch_dirs(api_base: str) -> List[Path] | None:
-    """Fetch watch directories from API. Returns None on failure or empty."""
+def _fetch_watch_dirs(api_base: str) -> List[Tuple[Path, str]] | None:
+    """Fetch watch directories from API. Returns None on failure or empty. Each item is (path, nickname)."""
     url = f"{api_base}/settings/watch-dirs"
     try:
         r = requests.get(url, timeout=10)
@@ -37,7 +37,7 @@ def _fetch_watch_dirs(api_base: str) -> List[Path] | None:
         if not isinstance(raw, list) or len(raw) == 0:
             print("[ingest] Watch-dirs API returned empty list")
             return None
-        dirs = []
+        dirs: List[Tuple[Path, str]] = []
         for item in raw:
             if isinstance(item, dict) and item.get("path"):
                 path_str = str(item["path"]).strip()
@@ -57,7 +57,7 @@ def _fetch_watch_dirs(api_base: str) -> List[Path] | None:
                 label = f" ({nickname})" if nickname else ""
                 print(f"[ingest] Skipping watch path{label}: not a directory: {p!r}")
                 continue
-            dirs.append(p)
+            dirs.append((p, nickname))
         if not dirs:
             print("[ingest] No watch paths from API exist on this machine; nothing to watch")
             return None
@@ -71,8 +71,8 @@ def _fetch_watch_dirs(api_base: str) -> List[Path] | None:
         return None
 
 
-def _read_watch_dirs_from_file(repo_root: Path) -> List[Path] | None:
-    """Read watch_dirs from backend/app/prompts/watch_dirs.json (same file the backend uses). Use when API is unavailable."""
+def _read_watch_dirs_from_file(repo_root: Path) -> List[Tuple[Path, str]] | None:
+    """Read watch_dirs from backend/app/prompts/watch_dirs.json (same file the backend uses). Use when API is unavailable. Each item is (path, nickname)."""
     file_path = repo_root / "backend" / "app" / "prompts" / "watch_dirs.json"
     if not file_path.exists():
         return None
@@ -81,7 +81,7 @@ def _read_watch_dirs_from_file(repo_root: Path) -> List[Path] | None:
         raw = data.get("watch_dirs")
         if not isinstance(raw, list) or len(raw) == 0:
             return None
-        dirs = []
+        dirs: List[Tuple[Path, str]] = []
         for item in raw:
             if isinstance(item, dict) and item.get("path"):
                 path_str = str(item["path"]).strip()
@@ -100,32 +100,32 @@ def _read_watch_dirs_from_file(repo_root: Path) -> List[Path] | None:
                 label = f" ({nickname})" if nickname else ""
                 print(f"[ingest] Skipping watch path{label}: not a directory: {p!r}")
                 continue
-            dirs.append(p)
+            dirs.append((p, nickname))
         return dirs if dirs else None
     except (json.JSONDecodeError, OSError):
         return None
 
 
-def _resolve_watch_dirs(repo_root: Path, api_base: str) -> List[Path]:
-    """Get list of directories to watch: API first, then watch_dirs.json file, then env WATCH_DIR, then default."""
+def _resolve_watch_dirs(repo_root: Path, api_base: str) -> List[Tuple[Path, str]]:
+    """Get list of (directory, nickname) to watch: API first, then watch_dirs.json file, then env WATCH_DIR, then default."""
     dirs = _fetch_watch_dirs(api_base)
     if dirs:
         print(f"[ingest] Using {len(dirs)} watch directory/ies from Admin API:")
-        for d in dirs:
-            print(f"[ingest]   - {d}")
+        for d, nick in dirs:
+            print(f"[ingest]   - {d}" + (f" ({nick})" if nick else ""))
         return dirs
     # API unavailable (404, down, or empty): try same config file the backend uses (Admin UI writes it via backend)
     dirs = _read_watch_dirs_from_file(repo_root)
     if dirs:
         print(f"[ingest] Using {len(dirs)} watch directory/ies from config file (API unavailable):")
-        for d in dirs:
-            print(f"[ingest]   - {d}")
+        for d, nick in dirs:
+            print(f"[ingest]   - {d}" + (f" ({nick})" if nick else ""))
         return dirs
     raw = os.environ.get("WATCH_DIR", "").strip()
     watch_dir = Path(raw).expanduser() if raw else None
     if watch_dir and watch_dir.exists() and watch_dir.is_dir():
         print(f"[ingest] Watch-dirs API unavailable and no config file; using WATCH_DIR from .env: {watch_dir}")
-        return [watch_dir]
+        return [(watch_dir, "")]
     default = repo_root / "watch_pdfs"
     default.mkdir(parents=True, exist_ok=True)
     if not raw:
@@ -133,7 +133,7 @@ def _resolve_watch_dirs(repo_root: Path, api_base: str) -> List[Path]:
     else:
         print(f"[ingest] Watch-dirs API unavailable and WATCH_DIR path does not exist: {raw!r}; using {default}")
     print(f"[ingest] Drop PDF files here and they will be ingested automatically.")
-    return [default]
+    return [(default, "")]
 
 
 def main() -> None:
@@ -157,23 +157,32 @@ def main() -> None:
         if fresh is not None:
             watch_dirs = fresh
 
-        pdfs_list: List[Path] = []
-        for watch_dir in watch_dirs:
+        # (path, nickname) for each PDF; nickname comes from the watch dir that contains the file
+        pdfs_list: List[Tuple[Path, str]] = []
+        for watch_dir, nickname in watch_dirs:
             try:
                 # rglob so we find PDFs in subdirectories too (e.g. .../WeChat/baiguanFeed_wechat/file.pdf)
-                pdfs_list.extend(watch_dir.rglob("*.pdf"))
+                for p in watch_dir.rglob("*.pdf"):
+                    pdfs_list.append((p, nickname))
             except OSError:
                 pass
 
-        def _mtime(p: Path) -> float:
+        def _mtime(item: Tuple[Path, str]) -> float:
             try:
-                return p.stat().st_mtime
+                return item[0].stat().st_mtime
             except OSError:
                 return 0.0
 
-        pdfs = sorted(set(pdfs_list), key=_mtime)
+        # Dedupe by path so we don't process same file twice if it appears under multiple dirs
+        seen_paths: set[Path] = set()
+        unique: List[Tuple[Path, str]] = []
+        for p, nick in pdfs_list:
+            if p not in seen_paths:
+                seen_paths.add(p)
+                unique.append((p, nick))
+        pdfs = sorted(unique, key=_mtime)
 
-        for p in pdfs:
+        for p, nickname in pdfs:
             try:
                 digest = _file_sha256(p)
                 if digest in seen_digests:
@@ -187,11 +196,13 @@ def main() -> None:
                     modified_at = datetime.fromtimestamp(file_ts, tz=timezone.utc).isoformat()
                 except OSError:
                     modified_at = None
+                # Use watch directory nickname as source_name, fallback to "wechat"
+                source_name = nickname.strip() or "wechat"
                 with p.open("rb") as f:
                     files = {"file": (p.name, f, "application/pdf")}
                     data = {
                         "source_type": "pdf",
-                        "source_name": "wechat",
+                        "source_name": source_name,
                         "source_uri": str(p),
                     }
                     if modified_at:

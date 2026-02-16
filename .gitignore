@@ -11,6 +11,11 @@ __pycache__/
 .venv/
 venv/
 
+# Gmail bridge (scripts/)
+scripts/credentials.json
+scripts/token.json
+scripts/.gmail_ingest_state
+
 # Local artifacts
 dev.db
 dev.db-wal

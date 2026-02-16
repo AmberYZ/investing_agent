@@ -8,6 +8,7 @@ type Evidence = {
   quote: string;
   page?: number | null;
   document_id: number;
+  source_display?: string | null;
 };
 
 type Narrative = {
@@ -32,7 +33,12 @@ function EvidenceQuote({ e }: { e: Evidence }) {
       <div className="whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-200">
         &ldquo;{e.quote}&rdquo;
       </div>
-      <div className="mt-3 flex items-center justify-end">
+      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+        {e.source_display && (
+          <span className="text-[11px] text-zinc-400 dark:text-zinc-500" title="Source">
+            {e.source_display}
+          </span>
+        )}
         <Link
           href={documentUrl}
           className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"

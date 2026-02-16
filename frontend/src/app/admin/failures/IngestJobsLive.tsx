@@ -6,6 +6,8 @@ type IngestJob = {
   id: number;
   document_id: number;
   filename?: string | null;
+  source_name?: string | null;
+  source_type?: string | null;
   status: string;
   error_message?: string | null;
   created_at: string;
@@ -186,6 +188,7 @@ export function IngestJobsLive() {
               <tr className="border-b border-zinc-200 text-[11px] uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
                 <th className="px-3 py-2 text-left">Job</th>
                 <th className="px-3 py-2 text-left">Filename</th>
+                <th className="px-3 py-2 text-left">Source</th>
                 <th className="px-3 py-2 text-left">Status</th>
                 <th className="px-3 py-2 text-left">Created</th>
                 <th className="px-3 py-2 text-left">Error</th>
@@ -199,7 +202,10 @@ export function IngestJobsLive() {
                 >
                   <td className="px-3 py-2 font-mono text-[11px]">#{j.id}</td>
                   <td className="max-w-[200px] truncate px-3 py-2 text-[11px]" title={j.filename ?? `doc #${j.document_id}`}>
-                    {truncateFilename(j.filename) || `#${j.document_id}`}
+                    {j.filename ? truncateFilename(j.filename) : `doc #${j.document_id}`}
+                  </td>
+                  <td className="max-w-[140px] truncate px-3 py-2 text-[11px] text-zinc-600 dark:text-zinc-400" title={[j.source_type, j.source_name].filter(Boolean).join(" · ")}>
+                    {j.source_name ?? j.source_type ?? "—"}
                   </td>
                   <td className="px-3 py-2 text-[11px]">
                     <span className={statusBadge(j.status)}>{j.status}</span>

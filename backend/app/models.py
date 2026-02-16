@@ -39,6 +39,8 @@ class Document(Base):
     gcs_raw_uri: Mapped[str] = mapped_column(Text)
     gcs_text_uri: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    content_type: Mapped[str] = mapped_column(String(64), default="application/pdf", nullable=False)
+
     num_pages: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -163,6 +165,7 @@ class Evidence(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc))
 
     narrative: Mapped["Narrative"] = relationship(back_populates="evidence")
+    document: Mapped["Document"] = relationship(foreign_keys=[document_id])
 
 
 class ThemeMentionsDaily(Base):

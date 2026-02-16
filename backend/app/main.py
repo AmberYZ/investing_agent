@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import logging
+import re
 import time
 from typing import Optional, Union
 
@@ -52,6 +53,7 @@ from app.schemas import (
     IngestJobOut,
     IngestRequest,
     IngestResponse,
+    IngestTextRequest,
     NarrativeDailyMetricOut,
     NarrativeOut,
     NarrativeShiftOut,
@@ -229,6 +231,7 @@ def ingest(req: IngestRequest, db: Session = Depends(get_db)):
         source_type=req.source_type,
         source_name=req.source_name,
         source_uri=req.source_uri,
+        content_type=req.content_type,
     )
     db.add(doc)
     try:
@@ -305,6 +308,57 @@ def ingest_file(
         source_uri=source_uri,
     )
     INGEST_REQUESTS.labels(endpoint="ingest-file").inc()
+    return ingest(req, db)
+
+
+def _sanitize_filename_part(title: str, max_len: int = 80) -> str:
+    """Sanitize a string for use in a storage key (no path separators or problematic chars)."""
+    s = re.sub(r"[^\w\s\-.]", "", title)
+    s = re.sub(r"\s+", "_", s.strip())
+    return (s[:max_len] if len(s) > max_len else s) or "untitled"
+
+
+@app.post("/ingest-text", response_model=IngestResponse)
+def ingest_text(
+    body: IngestTextRequest,
+    db: Session = Depends(get_db),
+):
+    """Ingest HTML or plain text (e.g. Substack email body from Make/Zapier webhook)."""
+    _check_ingest_paused()
+    _check_ingest_queue_cap(db)
+
+    content_bytes = body.content.encode("utf-8")
+    digest = hashlib.sha256(content_bytes).hexdigest()
+    ext = ".html" if body.content_type == "text/html" else ".txt"
+    safe_title = _sanitize_filename_part(body.title)
+    storage_key = f"raw/{digest}_{safe_title}{ext}"
+
+    storage = get_storage()
+    stored = storage.upload_bytes(
+        key=storage_key,
+        data=content_bytes,
+        content_type=body.content_type,
+    )
+
+    parsed_modified: Optional[dt.datetime] = None
+    if body.published_at:
+        try:
+            parsed_modified = dt.datetime.fromisoformat(body.published_at.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            pass
+
+    req = IngestRequest(
+        sha256=digest,
+        filename=safe_title + ext,
+        gcs_raw_uri=stored.uri,
+        received_at=dt.datetime.now(dt.timezone.utc),
+        modified_at=parsed_modified,
+        source_type=body.source_type,
+        source_name=body.source_name,
+        source_uri=body.source_uri,
+        content_type=body.content_type,
+    )
+    INGEST_REQUESTS.labels(endpoint="ingest-text").inc()
     return ingest(req, db)
 
 
@@ -923,6 +977,7 @@ def get_narrative(narrative_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Narrative not found")
     evs = (
         db.query(Evidence)
+        .options(joinedload(Evidence.document))
         .filter(Evidence.narrative_id == narrative_id)
         .order_by(Evidence.created_at.desc())
         .limit(50)
@@ -950,7 +1005,16 @@ def get_narrative(narrative_id: int, db: Session = Depends(get_db)):
         sub_theme=n.sub_theme,
         narrative_stance=n.narrative_stance,
         confidence_level=n.confidence_level,
-        evidence=[EvidenceOut(id=e.id, quote=e.quote, page=e.page, document_id=e.document_id) for e in evs],
+        evidence=[
+            EvidenceOut(
+                id=e.id,
+                quote=e.quote,
+                page=e.page,
+                document_id=e.document_id,
+                source_display=e.document.source_name if e.document else None,
+            )
+            for e in evs
+        ],
     )
 
 
@@ -1809,6 +1873,7 @@ def get_theme_narratives(
     for n in narratives:
         evs = (
             db.query(Evidence)
+            .options(joinedload(Evidence.document))
             .filter(Evidence.narrative_id == n.id)
             .order_by(Evidence.created_at.desc())
             .limit(20)
@@ -1828,7 +1893,16 @@ def get_theme_narratives(
                 sub_theme=n.sub_theme,
                 narrative_stance=n.narrative_stance,
                 confidence_level=n.confidence_level,
-                evidence=[EvidenceOut(id=e.id, quote=e.quote, page=e.page, document_id=e.document_id) for e in evs],
+                evidence=[
+                    EvidenceOut(
+                        id=e.id,
+                        quote=e.quote,
+                        page=e.page,
+                        document_id=e.document_id,
+                        source_display=e.document.source_name if e.document else None,
+                    )
+                    for e in evs
+                ],
             )
         )
     return result
@@ -1860,6 +1934,7 @@ def get_narrative_metrics(narrative_id: int, db: Session = Depends(get_db)):
 def list_ingest_failures(limit: int = 50, db: Session = Depends(get_db)):
     jobs = (
         db.query(IngestJob)
+        .options(joinedload(IngestJob.document))
         .filter(IngestJob.status == "error")
         .order_by(IngestJob.finished_at.desc().nullslast(), IngestJob.created_at.desc())
         .limit(limit)
@@ -1869,6 +1944,9 @@ def list_ingest_failures(limit: int = 50, db: Session = Depends(get_db)):
         IngestJobOut(
             id=j.id,
             document_id=j.document_id,
+            filename=j.document.filename if j.document else None,
+            source_name=j.document.source_name if j.document else None,
+            source_type=j.document.source_type if j.document else None,
             status=j.status,
             error_message=j.error_message,
             created_at=j.created_at,
@@ -1914,6 +1992,8 @@ def list_all_ingest_jobs(limit: int = 500, db: Session = Depends(get_db)):
             id=j.id,
             document_id=j.document_id,
             filename=j.document.filename if j.document else None,
+            source_name=j.document.source_name if j.document else None,
+            source_type=j.document.source_type if j.document else None,
             status=j.status,
             error_message=j.error_message,
             created_at=j.created_at,

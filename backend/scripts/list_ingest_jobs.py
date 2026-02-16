@@ -15,6 +15,8 @@ _backend = Path(__file__).resolve().parent.parent
 if str(_backend) not in sys.path:
     sys.path.insert(0, str(_backend))
 
+from sqlalchemy.orm import joinedload
+
 from app.db import SessionLocal
 from app.models import IngestJob
 
@@ -24,6 +26,7 @@ def list_jobs(limit: int = 500) -> list[dict]:
     try:
         jobs = (
             db.query(IngestJob)
+            .options(joinedload(IngestJob.document))
             .order_by(IngestJob.created_at.desc())
             .limit(limit)
             .all()
@@ -32,9 +35,13 @@ def list_jobs(limit: int = 500) -> list[dict]:
         db.close()
     out = []
     for j in jobs:
+        doc = j.document
         out.append({
             "id": j.id,
             "document_id": j.document_id,
+            "filename": doc.filename if doc else None,
+            "source_name": doc.source_name if doc else None,
+            "source_type": doc.source_type if doc else None,
             "status": j.status,
             "error_message": j.error_message,
             "created_at": j.created_at.isoformat() if j.created_at else None,

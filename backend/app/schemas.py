@@ -16,6 +16,19 @@ class IngestRequest(BaseModel):
     source_name: str = "wechat"
     source_uri: Optional[str] = None
     source_metadata: Optional[dict] = None
+    content_type: str = "application/pdf"
+
+
+class IngestTextRequest(BaseModel):
+    """Request body for POST /ingest-text (e.g. Substack email body or RSS article)."""
+
+    content: str
+    content_type: Literal["text/html", "text/plain"] = "text/html"
+    title: str
+    source_uri: Optional[str] = None
+    published_at: Optional[str] = None  # ISO8601
+    source_name: str = "Substack"
+    source_type: str = "substack"  # e.g. "substack" or "gmail"
 
 
 class IngestResponse(BaseModel):
@@ -55,6 +68,7 @@ class EvidenceOut(BaseModel):
     quote: str
     page: Optional[int] = None
     document_id: int
+    source_display: Optional[str] = None  # e.g. "wechat_baiguan" or "gmail · Invest_Digest"
 
 
 class NarrativeOut(BaseModel):
@@ -204,6 +218,9 @@ class NarrativeDailyMetricOut(BaseModel):
 class IngestJobOut(BaseModel):
     id: int
     document_id: int
+    filename: Optional[str] = None
+    source_name: Optional[str] = None
+    source_type: Optional[str] = None
     status: str
     error_message: Optional[str] = None
     created_at: dt.datetime
