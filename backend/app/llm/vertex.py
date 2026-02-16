@@ -65,7 +65,7 @@ def _extract_themes_vertex_impl(text: str) -> ExtractedDoc:
         "Sub-themes can be either reusable analytical lenses (e.g. 'Demand outlook', 'Valuation', 'Margins') "
         "OR named catalysts/entities (e.g. 'GENIUS Act', 'CHIPS Act', 'GPT-5') when the specific entity is central to the narrative. "
         "Prefer specificity—'GENIUS Act' is better than 'Regulation' if the narrative is specifically about that act.\n"
-        "Be concise, but include direct quotes as evidence with page numbers when possible.\n"
+        "Include direct quotes per narrative as evidence when the document supports it; use the evidence array fully.\n"
     )
 
     schema = {
@@ -90,10 +90,11 @@ def _extract_themes_vertex_impl(text: str) -> ExtractedDoc:
                                     "confidence_level": {"type": "string", "enum": ["fact", "opinion"]},
                                     "evidence": {
                                         "type": "array",
+                                        "description": "Multiple direct quotes or key sentences from the document that support this narrative. Include 2-5 items when the document provides enough support; minimum 1.",
                                         "items": {
                                             "type": "object",
                                             "properties": {
-                                                "quote": {"type": "string"},
+                                                "quote": {"type": "string", "description": "Exact quote or key sentence from the document."},
                                                 "page": {"type": ["integer", "null"]},
                                             },
                                             "required": ["quote", "page"],
@@ -124,9 +125,10 @@ def _extract_themes_vertex_impl(text: str) -> ExtractedDoc:
         f"{text[:120000]}\n"
     )
 
+    max_out = settings.llm_extraction_max_tokens
     resp = model.generate_content(
         [system, prompt],
-        generation_config={"temperature": 0.2, "max_output_tokens": 4096},
+        generation_config={"temperature": 0.2, "max_output_tokens": max_out},
     )
     raw = (resp.text or "").strip()
 

@@ -429,3 +429,12 @@ curl "http://127.0.0.1:8000/admin/themes/diagnostic?label=SomeTheme"
 ---
 
 *Last updated from codebase maintenance audit. For env details see also `ENV.md` and `.env.example`; for LLM setup see `LLM_SETUP.md`.*
+
+# Re-extract only the last completed ingest (e.g. the last Gmail)
+curl -X POST "http://127.0.0.1:8000/admin/re-extract?last=1"
+
+
+# Dry-run extraction and compare different LLM models. 
+ curl -X POST "http://localhost:8000/admin/extraction-dry-run" \
+  -H "Content-Type: application/json" \
+  -d '{"document_id": 1184, "models": ["gpt-4o-mini", "gpt-4o"]}'

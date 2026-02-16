@@ -41,6 +41,7 @@ from app.models import (
 from app.schemas import (
     AdminThemeOut,
     BasketItemOut,
+    ExtractionDryRunRequest,
     BasketSummaryItemOut,
     CancelIngestJobsOut,
     RequeueIngestJobsOut,
@@ -102,7 +103,11 @@ from app.analytics import (
     get_archived_themes,
 )
 from app.insights import get_theme_insights
-from app.llm.api_extract import get_extraction_prompt_template, set_extraction_prompt_template
+from app.llm.api_extract import (
+    get_extraction_prompt_template,
+    set_extraction_prompt_template,
+    extract_themes_and_narratives as extract_themes_api,
+)
 from app.settings import settings
 from app.theme_merge import MergeOptions, compute_merge_candidates, execute_theme_merge
 from app.worker import canonicalize_label, ensure_alias
@@ -2053,6 +2058,67 @@ def update_extraction_prompt(body: ExtractionPromptUpdate) -> ExtractionPromptOu
     )
 
 
+@app.post("/admin/extraction-dry-run")
+def extraction_dry_run(
+    body: ExtractionDryRunRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Run theme/narrative extraction with one or more models and return their outputs.
+    No database writes: use this to compare extraction quality across models (e.g. gpt-4o-mini vs gpt-4o).
+    Provide either body.text (raw document text) or body.document_id (load text from stored document).
+    Uses current LLM_PROVIDER; pass models e.g. ['gpt-4o-mini', 'gpt-4o'] to compare.
+    """
+    from dataclasses import asdict
+
+    text: str | None = None
+    if body.document_id is not None and body.text:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of 'text' or 'document_id', not both.",
+        )
+    if body.document_id is not None:
+        doc = db.query(Document).filter(Document.id == body.document_id).one_or_none()
+        if doc is None:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if not doc.gcs_text_uri:
+            raise HTTPException(
+                status_code=400,
+                detail="Document has no extracted text (gcs_text_uri). Run ingest first.",
+            )
+        storage = get_storage()
+        try:
+            text = storage.download_bytes(uri=doc.gcs_text_uri).decode("utf-8", errors="replace")
+        except Exception as e:
+            logging.exception("Failed to download document text: %s", e)
+            raise HTTPException(status_code=502, detail="Failed to load document text from storage")
+    elif body.text:
+        text = body.text
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide 'text' (raw document text) or 'document_id' (existing document).",
+        )
+
+    models_to_run = body.models if body.models else [settings.llm_model or "gpt-4o-mini"]
+    results: dict[str, dict] = {}
+    for model in models_to_run:
+        model = (model or "").strip()
+        if not model:
+            continue
+        try:
+            extracted = extract_themes_api(text=text, model_override=model)
+            results[model] = asdict(extracted)
+        except Exception as e:
+            results[model] = {"error": str(e)}
+
+    return {
+        "results": results,
+        "text_preview": (text[:500] + "…") if len(text) > 500 else text,
+        "text_length": len(text),
+    }
+
+
 @app.get("/admin/themes", response_model=list[AdminThemeOut])
 def list_admin_themes(
     sort: str = Query("label", description="label or recent"),
@@ -2357,16 +2423,23 @@ def reassign_narratives(body: ReassignNarrativesRequest, db: Session = Depends(g
 @app.post("/admin/re-extract")
 def re_extract_documents(
     document_ids: Optional[list[int]] = Query(None, description="Document IDs to re-extract (omit for ALL)"),
+    last: Optional[int] = Query(None, description="If set, re-extract only the N most recently completed ingest(s); e.g. last=1 for last doc only. Ignores document_ids when set."),
     db: Session = Depends(get_db),
 ) -> dict:
     """
     Re-extract themes/narratives for existing documents using the current prompt.
-    This deletes old evidence for each document (to avoid duplicates) and requeues
-    the ingest job so the worker re-runs LLM extraction.
-    Existing narratives are matched by (theme_id, statement) and will have their
-    sub_theme / narrative_stance / confidence_level updated from the fresh extraction.
+    Deletes old evidence for the selected document(s) and requeues their ingest jobs.
+    Use ?last=1 to re-extract only the most recently completed document (safe default).
     """
-    if document_ids:
+    if last is not None and last > 0:
+        jobs = (
+            db.query(IngestJob)
+            .filter(IngestJob.status == "done")
+            .order_by(IngestJob.finished_at.desc().nullslast())
+            .limit(last)
+            .all()
+        )
+    elif document_ids:
         jobs = (
             db.query(IngestJob)
             .filter(IngestJob.document_id.in_(document_ids), IngestJob.status == "done")
@@ -2380,14 +2453,14 @@ def re_extract_documents(
 
     doc_ids_to_requeue = [j.document_id for j in jobs]
 
-    # Delete old evidence for these documents (prevents duplicate quotes on re-extraction)
+    # Clear all extraction-derived data for these documents (avoids duplicate/stale narratives and quotes)
     deleted_evidence = (
         db.query(Evidence)
         .filter(Evidence.document_id.in_(doc_ids_to_requeue))
         .delete(synchronize_session="fetch")
     )
 
-    # Clean up orphaned narratives (no remaining evidence after deletion)
+    # Remove narratives that no longer have any evidence (e.g. only cited this document)
     from sqlalchemy import exists
     orphan_ids = [
         r[0]
@@ -2402,6 +2475,11 @@ def re_extract_documents(
             .filter(Narrative.id.in_(orphan_ids))
             .delete(synchronize_session="fetch")
         )
+
+    # Clear document summaries so UI does not show stale takeaways until worker repopulates
+    db.query(Document).filter(Document.id.in_(doc_ids_to_requeue)).update(
+        {"summary": None}, synchronize_session="fetch"
+    )
 
     # Requeue the ingest jobs
     for j in jobs:

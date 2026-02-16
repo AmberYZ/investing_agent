@@ -16,17 +16,24 @@ def _timeout_seconds() -> float:
     return float(max(10, getattr(settings, "llm_timeout_seconds", 180)))
 
 
-def chat_completion(*, system: str, user: str, max_tokens: int = 2048) -> str:
+def chat_completion(
+    *,
+    system: str,
+    user: str,
+    max_tokens: int = 2048,
+    model: str | None = None,
+) -> str:
     """
     Send system + user message to the configured LLM and return the assistant text.
     Uses LLM_API_KEY and LLM_PROVIDER / LLM_MODEL / LLM_BASE_URL from settings.
     Respects LLM_TIMEOUT_SECONDS (default 180) to avoid indefinite hangs.
+    Pass model= to override the configured model for this call (e.g. for dry-run comparison).
     """
     if not settings.llm_api_key:
         raise ValueError("LLM_API_KEY is not set")
 
     provider = (settings.llm_provider or "openai").lower().strip()
-    model = settings.llm_model or "gpt-4o-mini"
+    model = (model or settings.llm_model or "gpt-4o-mini").strip()
     api_key = settings.llm_api_key
     base_url = (settings.llm_base_url or "").strip() or None
     timeout = _timeout_seconds()

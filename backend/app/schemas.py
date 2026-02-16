@@ -313,6 +313,17 @@ class ExtractionPromptUpdate(BaseModel):
     prompt_template: str
 
 
+class ExtractionDryRunRequest(BaseModel):
+    """Request for POST /admin/extraction-dry-run: run extraction with multiple models, no DB write."""
+
+    text: Optional[str] = Field(None, description="Document text to extract from. Omit if using document_id.")
+    document_id: Optional[int] = Field(None, description="Existing document ID; text is loaded from storage (read-only).")
+    models: list[str] = Field(
+        default_factory=list,
+        description="Model names to run (e.g. ['gpt-4o-mini', 'gpt-4o']). Uses current LLM_PROVIDER. Empty = use configured LLM_MODEL only.",
+    )
+
+
 class ThemeMergeRequest(BaseModel):
     source_theme_id: int
     target_theme_id: int

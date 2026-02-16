@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Max concurrent LLM requests when processing ingested documents (worker parallelism).
     # Higher = faster throughput but more API pressure. Default 3 is safe for most providers.
     llm_max_concurrent_requests: int = 3
+    # Max output tokens for theme/narrative extraction. Default 16384 allows many themes, narratives, and quotes.
+    # If you see truncated or limited extractions, increase (e.g. 32768). Some models cap at 8k–32k.
+    llm_extraction_max_tokens: int = 16384
     # Force heuristic extraction (no LLM/Vertex). When true, ignores LLM_API_KEY and Vertex.
     use_heuristic_extraction: bool = False
 

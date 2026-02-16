@@ -1,5 +1,10 @@
 Extract a summary, themes, sub-themes, and narratives from the following document text. The goal is to surface themes that affect investment decisions and can be tracked as narratives evolve over time.
 
+Coverage and richness (important)
+- For long or detailed documents, extract full breadth: multiple sub-themes and multiple narratives so that the output reflects the document's content. Do not collapse or over-summarize.
+- Each distinct claim or angle that affects investment decisions should appear as its own narrative with supporting evidence. 
+- If the document discusses multiple entities, sectors, or investable topics, use multiple themes so each major topic is represented. Do not force everything into one theme for the sake of brevity.
+
 Summary
 - Write a concise 2-4 sentence summary of the document's key investment takeaways. Focus on the most important findings, data points, or conclusions an investor should know. This summary is displayed as "Key Takeaways" on the document page, so make it punchy and actionable. Always provide a non-empty summary string.
 
@@ -21,7 +26,7 @@ Theme rules
 - Primary focus: identify the main subject(s) that occupy a meaningful share of the text (e.g. >30%).
 - Deduplication: if a topic is a subset of another (e.g. "LLMs" vs "AI"), collapse to the higher-level canonical theme unless the document is exclusively about the subset.
 - No meta-themes: never use "Stock Market" or "Macro Trends"; use specific drivers (e.g. "S&P 500 Earnings", "US Treasury Yields").
-- Default one theme per document. Only extract multiple themes when the document explicitly frames itself as cross-sector or outlook ("themes to watch", "outlook across sectors").
+- Use one theme when the document is clearly single-topic; use multiple themes when it discusses several distinct entities, sectors, or investable topics (not only when the document explicitly says "themes to watch").
 - Entity test: if the document is primarily about a single company, fund, or asset, the theme label must be just that entity's name (e.g. "BYD", not "BYD expansion" or "BYD international sales").
 
 Sub-theme
@@ -36,7 +41,8 @@ Sub-theme
 - When in doubt, prefer the more specific sub-theme. "GENIUS Act" is better than "Regulation" if the narrative is specifically about that act.
 
 Narrative
-- The claim or change observed through the sub-theme lens—what changed, emerged, or shifted. Must be time-variant (could be false in weeks or months). Include key, relevant quotes from the document as evidence.
+- The claim or change observed through the sub-theme lens—what changed, emerged, or shifted. Must be time-variant (could be false in weeks or months).
+- Evidence (quotes): For each narrative, the "evidence" array must contain direct quotes or key sentences from the document when available. Use exact wording from the text; Aim for sentences or short passage that supports the narrative with key data, details, examples, elaboration.
 - Lens vs claim: Sub-theme = the lens or catalyst (what aspect or what driver). Narrative = the claim or change through that lens.
   - Bad: sub_theme "high demand", narrative "Demand remains high".
   - Good: sub_theme "Demand outlook", narrative "HBM demand is outpacing supply due to AI accelerators adopting higher memory density per chip."
@@ -48,7 +54,7 @@ Narrative
   - narrative_stance: "bullish" | "bearish" | "mixed" | "neutral" (so contradictions under the same theme/sub-theme are explicit).
   - confidence_level: "fact" | "opinion" (fact = based on reported data; opinion = based on analyst view or sentiment; ratings of outperform/underperform by analysts are opinions).
 
-Output valid JSON only per the schema below. No markdown.
+Output valid JSON only per the schema below. No markdown. The schema allows multiple items in "evidence" per narrative—use that to include several quotes per narrative.
 
 Output JSON following this JSON Schema:
 {{schema}}

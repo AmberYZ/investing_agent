@@ -47,7 +47,7 @@ EXTRACTION_SCHEMA = {
                                     "items": {
                                         "type": "object",
                                         "properties": {
-                                            "quote": {"type": "string"},
+                                            "quote": {"type": "string", "description": "Exact quotes, key sentences, or short passages from the document."},
                                             "page": {"type": ["integer", "null"]},
                                         },
                                         "required": ["quote", "page"],
@@ -75,7 +75,7 @@ _DEFAULT_SYSTEM = (
     "OR named catalysts/entities (e.g. 'GENIUS Act', 'CHIPS Act', 'GPT-5') when the specific entity is central to the narrative. "
     "Prefer specificity—'GENIUS Act' is better than 'Regulation' if the narrative is specifically about that act.\n"
     "For each narrative provide sub_theme, narrative_stance (bullish/bearish/mixed/neutral), and confidence_level (fact/opinion).\n"
-    "Be concise, but include direct quotes as evidence with page numbers when possible.\n"
+    "Include multiple direct quotes per narrative as evidence if necessary; use the evidence array fully.\n"
 )
 
 # Paths relative to backend/app (or repo); prompt file can be overridden by user
@@ -100,15 +100,30 @@ def set_extraction_prompt_template(content: str) -> None:
 
 # Retry up to 5 times with longer backoff so transient 503 (e.g. behind VPN) can succeed
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=2, max=60))
-def extract_themes_and_narratives(*, text: str) -> ExtractedDoc:
-    """Call configured LLM with editable prompt and return structured extraction."""
-    logger.info("Calling LLM provider=%s model=%s input_len=%d", settings.llm_provider, settings.llm_model, min(len(text), _MAX_DOC_CHARS))
+def extract_themes_and_narratives(
+    *,
+    text: str,
+    model_override: str | None = None,
+) -> ExtractedDoc:
+    """Call configured LLM with editable prompt and return structured extraction.
+    Pass model_override to use a different model for this call only (e.g. dry-run comparison)."""
+    effective_model = (model_override or settings.llm_model or "gpt-4o-mini").strip()
+    logger.info(
+        "Calling LLM provider=%s model=%s input_len=%d max_output_tokens=%d",
+        settings.llm_provider, effective_model, min(len(text), _MAX_DOC_CHARS),
+        settings.llm_extraction_max_tokens,
+    )
     template = get_extraction_prompt_template()
     user_prompt = (
         template.replace("{{schema}}", json.dumps(EXTRACTION_SCHEMA))
         .replace("{{text}}", text[: _MAX_DOC_CHARS])
     )
-    raw = chat_completion(system=_DEFAULT_SYSTEM, user=user_prompt, max_tokens=4096)
+    raw = chat_completion(
+        system=_DEFAULT_SYSTEM,
+        user=user_prompt,
+        max_tokens=settings.llm_extraction_max_tokens,
+        model=model_override,
+    )
     # Strip markdown code block if present
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1] if "\n" in raw else raw[3:]
