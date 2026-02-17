@@ -136,9 +136,12 @@ function buildBasketSeries(
 
 export function ThemeInstruments({
   themeId,
+  months = 6,
   compactLayout,
 }: {
   themeId: string;
+  /** Time range in months (6 or 12) — drives price and historical PE chart range */
+  months?: number;
   /** When true, omit top margin for use in grid layout */
   compactLayout?: boolean;
 }) {
@@ -188,24 +191,25 @@ export function ThemeInstruments({
 
   const loadQuote = useCallback(
     async (symbol: string, useCache = true): Promise<InstrumentQuote | null> => {
-      const cached = quoteCache.current.get(symbol);
+      const cacheKey = `${symbol}-${months}`;
+      const cached = quoteCache.current.get(cacheKey);
       if (useCache && cached && Date.now() - cached.fetchedAt < PRICE_CACHE_TTL_MS) {
         return cached.data;
       }
-      const res = await fetch(`${API_BASE}/instruments/${encodeURIComponent(symbol)}/prices?months=6`);
+      const res = await fetch(`${API_BASE}/instruments/${encodeURIComponent(symbol)}/prices?months=${months}`);
       if (!res.ok) return null;
       const data = await res.json();
-      quoteCache.current.set(symbol, { data, fetchedAt: Date.now() });
+      quoteCache.current.set(cacheKey, { data, fetchedAt: Date.now() });
       return data;
     },
-    []
+    [months]
   );
 
   const loadStance = useCallback(async () => {
-    const res = await fetch(`${API_BASE}/themes/${themeId}/metrics-by-stance?months=6`);
+    const res = await fetch(`${API_BASE}/themes/${themeId}/metrics-by-stance?months=${months}`);
     if (!res.ok) return [];
     return res.json();
-  }, [themeId]);
+  }, [themeId, months]);
 
   useEffect(() => {
     if (viewMode !== "single" || !selectedSymbol) return;
@@ -226,13 +230,13 @@ export function ThemeInstruments({
     }
     setHistPeLoading(true);
     setHistPe(null);
-    fetch(`${API_BASE}/instruments/${encodeURIComponent(selectedSymbol)}/historical-pe?months=24`)
+    fetch(`${API_BASE}/instruments/${encodeURIComponent(selectedSymbol)}/historical-pe?months=${months}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data: HistoricalPEResponse | null) => {
         setHistPe(data ?? null);
       })
       .finally(() => setHistPeLoading(false));
-  }, [viewMode, selectedSymbol]);
+  }, [viewMode, selectedSymbol, months]);
 
   const handleTickerClick = (symbol: string) => {
     setViewMode("single");

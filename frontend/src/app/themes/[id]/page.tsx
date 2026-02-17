@@ -307,7 +307,7 @@ export default async function ThemePage(
         {/* 2) Two columns: left = charts + instruments, right = narratives */}
         <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-stretch">
           <div className="min-w-0 space-y-4">
-            <ThemeInstruments themeId={id} compactLayout />
+            <ThemeInstruments themeId={id} months={months} compactLayout />
             <ThemeChartAndDayDocs
               metrics={metrics ?? []}
               metricsBySubTheme={metricsBySubTheme ?? []}

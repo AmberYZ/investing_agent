@@ -7,8 +7,8 @@ Notes:
 - Forward PE and PEG: Alpha Vantage OVERVIEW does provide ForwardPE and PEGRatio (see demo response).
   They often appear as "-" or empty for non-US symbols, small caps, or when analyst estimates are missing.
   We only parse overview when the response contains "Symbol" (so rate-limit/error responses are skipped).
-- PE percentile vs 5-year history: Not provided by Alpha Vantage. It would require building a historical
-  P/E series (e.g. from EARNINGS + daily prices) and computing percentile; not implemented here.
+- PE percentile vs 5-year history: built from EARNINGS + daily prices; percentile is computed relative to
+  the past 5 years (not just the chart range). Chart series is still trimmed to the requested range.
 """
 
 from __future__ import annotations
@@ -35,6 +35,9 @@ def _min_seconds_between_requests() -> float:
     return getattr(settings, "alpha_vantage_min_seconds_between_requests", 1.0)
 
 BASE_URL = "https://www.alphavantage.co/query"
+
+# ~21 trading days per month (252/year); use for bar count so "6 months" ≈ 6 calendar months
+TRADING_DAYS_PER_MONTH = 21
 
 # Technical indicator periods
 SMA_PERIOD = 20
@@ -214,12 +217,13 @@ def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
 
     try:
         with httpx.Client(timeout=30.0) as client:
-            # 1) Daily time series (compact = last 100 days; 6 months ≈ 126, we get 100)
+            # 1) Daily time series: compact = last 100 days; full = 20+ years (use full when we need >100 days)
+            num_bars = months * TRADING_DAYS_PER_MONTH
             daily_params = {
                 "function": "TIME_SERIES_DAILY",
                 "symbol": symbol,
                 "apikey": api_key,
-                "outputsize": "compact",
+                "outputsize": "full" if num_bars > 100 else "compact",
             }
             r_daily = client.get(BASE_URL, params=daily_params)
             r_daily.raise_for_status()
@@ -227,7 +231,7 @@ def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
 
             if "Time Series (Daily)" in data_daily:
                 series = data_daily["Time Series (Daily)"]
-                for date_str, day in sorted(series.items(), reverse=True)[: months * 31]:
+                for date_str, day in sorted(series.items(), reverse=True)[:num_bars]:
                     try:
                         open_ = float(day.get("1. open", 0))
                         high = float(day.get("2. high", 0))
@@ -505,11 +509,16 @@ def get_eps_growth(symbol: str) -> dict[str, Any]:
     return out
 
 
+# Lookback for PE percentile: always use 5 years so percentile is relative to 5-year history, not chart range
+PE_PERCENTILE_LOOKBACK_MONTHS = 60
+
+
 def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
     """
     Build historical trailing P/E: for each trading day, trailing_12m_eps = sum of
     last 4 reported quarters as of that date; PE = close / trailing_12m_eps.
     Returns series (date, pe, close, trailing_12m_eps), current_pe, pe_percentile.
+    PE percentile is computed relative to the past 5 years, not just the chart range.
     """
     global _last_request_time
     symbol = (symbol or "").strip().upper()
@@ -529,25 +538,23 @@ def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
         out["message"] = "Alpha Vantage API key not set."
         return out
 
-    # Get daily prices (reuse throttle/cache via get_prices_and_valuation)
-    prices_data = get_prices_and_valuation(symbol, months=min(months, 12))
-    prices = (prices_data.get("prices") or [])[: months * 31]
+    # Fetch 5 years of prices for PE percentile baseline (so percentile is vs 5-year history)
+    prices_data = get_prices_and_valuation(symbol, months=PE_PERCENTILE_LOOKBACK_MONTHS)
+    all_prices = prices_data.get("prices") or []
     earn = get_earnings(symbol)
     quarters = earn.get("quarterly_earnings") or []
-    if not prices or not quarters:
+    if not all_prices or not quarters:
         out["message"] = prices_data.get("message") or earn.get("message") or "No price or earnings data."
         return out
 
     # For each trading day d: trailing_12m_eps(d) = sum of reportedEPS for 4 most recent quarters with reportedDate <= d
-    # quarters are sorted by reportedDate desc (most recent first)
     q_sorted_by_date = sorted(quarters, key=lambda x: x["reportedDate"])
-    series: list[dict[str, Any]] = []
-    for p in prices:
+    full_series: list[dict[str, Any]] = []
+    for p in all_prices:
         d = (p.get("date") or "")[:10]
         close = p.get("close")
         if not d or close is None or close <= 0:
             continue
-        # Quarters with reportedDate <= d, take last 4
         eligible = [q for q in q_sorted_by_date if q["reportedDate"] <= d]
         if len(eligible) < 4:
             continue
@@ -556,17 +563,20 @@ def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
         if t12 <= 0:
             continue
         pe = round(close / t12, 2)
-        series.append({"date": d, "close": close, "trailing_12m_eps": round(t12, 4), "pe": pe})
-    if not series:
+        full_series.append({"date": d, "close": close, "trailing_12m_eps": round(t12, 4), "pe": pe})
+    if not full_series:
         out["message"] = "Could not build PE series (insufficient quarters vs price dates)."
         return out
 
-    out["series"] = series
-    current = series[-1]
+    # Chart series: last ~months of calendar time (by trading days)
+    num_bars = months * TRADING_DAYS_PER_MONTH
+    out["series"] = full_series[-num_bars:] if num_bars < len(full_series) else full_series
+    current = full_series[-1]
     out["current_pe"] = current["pe"]
-    pes = [x["pe"] for x in series]
-    n_below = sum(1 for pe in pes if pe < current["pe"])
-    out["pe_percentile"] = round(n_below / len(pes) * 100, 1) if pes else None
+    # PE percentile vs past 5 years (full_series), not just chart range
+    pes_5y = [x["pe"] for x in full_series]
+    n_below = sum(1 for pe in pes_5y if pe < current["pe"])
+    out["pe_percentile"] = round(n_below / len(pes_5y) * 100, 1) if pes_5y else None
     return out
 
 
