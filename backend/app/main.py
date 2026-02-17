@@ -49,6 +49,7 @@ from app.schemas import (
     BasketItemOut,
     ExtractionDryRunRequest,
     BasketSummaryItemOut,
+    BasketTickerRowOut,
     CancelIngestJobsOut,
     RequeueIngestJobsOut,
     DocumentExcerptsOut,
@@ -722,6 +723,79 @@ def get_theme_basket_metrics(theme_id: int, db: Session = Depends(get_db)):
     )
 
 
+@app.get("/basket/tickers", response_model=list[BasketTickerRowOut])
+def get_basket_tickers(
+    db: Session = Depends(get_db),
+    include_metrics: bool = Query(
+        False,
+        description="If false, return only theme + symbol (fast). Client can load metrics in parallel via /themes/{id}/instruments/summary.",
+    ),
+):
+    """Flat list of all tickers across followed themes with theme tag. Set include_metrics=true for server-side metrics (slow)."""
+    ids = get_followed_theme_ids()
+    if not ids:
+        return []
+    themes = db.query(Theme).filter(Theme.id.in_(ids)).all()
+    theme_by_id = {t.id: t for t in themes}
+    ordered_ids = [tid for tid in ids if tid in theme_by_id]
+    result: list[BasketTickerRowOut] = []
+    for theme_id in ordered_ids:
+        theme = theme_by_id[theme_id]
+        rows = (
+            db.query(ThemeInstrument)
+            .filter(ThemeInstrument.theme_id == theme_id)
+            .order_by(ThemeInstrument.symbol)
+            .all()
+        )
+        for r in rows:
+            row = BasketTickerRowOut(
+                theme_id=theme_id,
+                canonical_label=theme.canonical_label or "",
+                id=r.id,
+                symbol=r.symbol,
+                display_name=r.display_name,
+                type=r.type or "stock",
+                source=r.source or "manual",
+            )
+            if include_metrics:
+                from app.market_data import (
+                    get_prices_and_valuation,
+                    compute_period_returns,
+                    get_earnings_estimates,
+                    get_eps_growth,
+                )
+                try:
+                    data = get_prices_and_valuation(r.symbol, months=6)
+                    prices = data.get("prices") or []
+                    if prices:
+                        returns = compute_period_returns(prices)
+                        row.pct_1m = returns.get("pct_1m")
+                        row.pct_3m = returns.get("pct_3m")
+                        row.pct_ytd = returns.get("pct_ytd")
+                        last_bar = prices[-1]
+                        row.last_close = (
+                            float(last_bar.get("close", 0)) if last_bar.get("close") is not None else None
+                        )
+                        if isinstance(last_bar.get("rsi_14"), (int, float)):
+                            row.latest_rsi = round(float(last_bar["rsi_14"]), 2)
+                    row.forward_pe = data.get("forward_pe")
+                    row.peg_ratio = data.get("peg_ratio")
+                    row.quarterly_earnings_growth_yoy = data.get("quarterly_earnings_growth_yoy")
+                    row.quarterly_revenue_growth_yoy = data.get("quarterly_revenue_growth_yoy")
+                    if data.get("message"):
+                        row.message = data["message"]
+                    est = get_earnings_estimates(r.symbol)
+                    row.next_fy_eps_estimate = est.get("next_fy_eps_estimate")
+                    row.eps_revision_up_30d = est.get("eps_revision_up_30d")
+                    row.eps_revision_down_30d = est.get("eps_revision_down_30d")
+                    growth = get_eps_growth(r.symbol)
+                    row.eps_growth_pct = growth.get("eps_growth_pct")
+                except Exception:
+                    pass
+            result.append(row)
+    return result
+
+
 @app.get("/themes/contrarian-recent", response_model=list[ThemeIdLabelOut])
 def get_themes_contrarian_recent(
     days: int = Query(14, ge=1, le=90, description="Look back days for contrarian evidence"),
@@ -844,13 +918,32 @@ def _aggregate_network_by_canonical_label(
     return nodes, edges
 
 
+def _active_theme_ids(db: Session, active_days: int) -> set[int]:
+    """Theme ids that have evidence in the last active_days (by document date)."""
+    now = dt.datetime.now(dt.timezone.utc)
+    since_date = (now - dt.timedelta(days=active_days)).date()
+    doc_date = func.date(_doc_timestamp())
+    return set(
+        r.theme_id
+        for r in db.query(Narrative.theme_id)
+        .join(Evidence, Evidence.narrative_id == Narrative.id)
+        .join(Document, Evidence.document_id == Document.id)
+        .filter(doc_date >= since_date)
+        .distinct()
+        .all()
+    )
+
+
 @app.get("/themes/network", response_model=ThemeNetworkOut)
 def get_themes_network(
     months: int = Query(6, ge=1, le=12),
+    active_only: bool = Query(True, description="If true, only themes with evidence in the last active_days"),
+    active_days: int = Query(30, ge=1, le=365, description="Used when active_only=true"),
     db: Session = Depends(get_db),
 ):
     """Theme co-occurrence network: nodes = themes with volume, edges = doc count where both themes appear.
-    Themes that share the same canonical_label (e.g. after a merge) are shown as one node with combined volume."""
+    Themes that share the same canonical_label (e.g. after a merge) are shown as one node with combined volume.
+    When active_only=true, only themes with evidence in the last active_days are included."""
     since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=months * 31)
     rows = (
         db.query(Evidence.document_id, Narrative.theme_id)
@@ -865,6 +958,14 @@ def get_themes_network(
     for doc_id, theme_id in rows:
         doc_themes.setdefault(doc_id, set()).add(theme_id)
         theme_mentions[theme_id] = theme_mentions.get(theme_id, 0) + 1
+    if active_only:
+        active_ids = _active_theme_ids(db, active_days)
+        theme_mentions = {k: v for k, v in theme_mentions.items() if k in active_ids}
+        doc_themes = {
+            doc_id: {t for t in s if t in active_ids}
+            for doc_id, s in doc_themes.items()
+        }
+        doc_themes = {doc_id: s for doc_id, s in doc_themes.items() if len(s) >= 2}
     theme_ids = sorted(theme_mentions.keys())
     themes_by_id = {t.id: t for t in db.query(Theme).filter(Theme.id.in_(theme_ids)).all()}
     nodes, edges = _aggregate_network_by_canonical_label(doc_themes, theme_mentions, themes_by_id)
@@ -900,10 +1001,14 @@ def _network_for_date_range(
 @app.get("/themes/network/snapshots", response_model=ThemeNetworkSnapshotsOut)
 def get_themes_network_snapshots(
     months: int = Query(6, ge=1, le=12),
+    active_only: bool = Query(True, description="If true, only themes with evidence in the last active_days"),
+    active_days: int = Query(30, ge=1, le=365, description="Used when active_only=true"),
     db: Session = Depends(get_db),
 ):
-    """One network snapshot per month for the last N months. Use to show how relationships change over time."""
+    """One network snapshot per month for the last N months. Use to show how relationships change over time.
+    When active_only=true, each snapshot only includes themes that have evidence in the last active_days."""
     now = dt.datetime.now(dt.timezone.utc)
+    active_ids: set[int] | None = _active_theme_ids(db, active_days) if active_only else None
     snapshots: list[ThemeNetworkSnapshotOut] = []
     for i in range(months - 1, -1, -1):
         # Month window: from (now - (i+1)*~31d) to (now - i*~31d)
@@ -911,6 +1016,11 @@ def get_themes_network_snapshots(
         since = until - dt.timedelta(days=31)
         label = since.strftime("%b %Y")
         nodes, edges = _network_for_date_range(db, since, until)
+        if active_ids is not None:
+            node_ids = {n.id for n in nodes}
+            keep = node_ids & active_ids
+            nodes = [n for n in nodes if n.id in keep]
+            edges = [e for e in edges if e.theme_id_a in keep and e.theme_id_b in keep]
         snapshots.append(
             ThemeNetworkSnapshotOut(period_label=label, nodes=nodes, edges=edges)
         )

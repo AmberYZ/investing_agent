@@ -47,6 +47,56 @@ type InstrumentSummary = {
   message?: string | null;
 };
 
+/** Flat ticker row for basket ticker-only view (from GET /basket/tickers) */
+type BasketTickerRow = InstrumentSummary & {
+  theme_id: number;
+  canonical_label: string;
+};
+
+/** One row per symbol with themes combined (for By ticker table) */
+type TickerDisplayRow = Omit<InstrumentSummary, "id"> & {
+  theme_ids: number[];
+  theme_labels: string[];
+};
+
+function dedupeTickerRowsBySymbol(rows: BasketTickerRow[]): TickerDisplayRow[] {
+  const bySymbol = new Map<string, BasketTickerRow[]>();
+  for (const r of rows) {
+    const key = (r.symbol || "").toUpperCase();
+    if (!bySymbol.has(key)) bySymbol.set(key, []);
+    bySymbol.get(key)!.push(r);
+  }
+  return Array.from(bySymbol.entries()).map(([symbol, group]) => {
+    const first = group[0];
+    const theme_ids = [...new Set(group.map((r) => r.theme_id))];
+    const theme_labels = theme_ids.map(
+      (tid) => group.find((r) => r.theme_id === tid)?.canonical_label ?? ""
+    );
+    return {
+      symbol: first.symbol,
+      display_name: first.display_name,
+      type: first.type,
+      source: first.source,
+      last_close: first.last_close,
+      pct_1m: first.pct_1m,
+      pct_3m: first.pct_3m,
+      pct_ytd: first.pct_ytd,
+      forward_pe: first.forward_pe,
+      peg_ratio: first.peg_ratio,
+      latest_rsi: first.latest_rsi,
+      quarterly_earnings_growth_yoy: first.quarterly_earnings_growth_yoy,
+      quarterly_revenue_growth_yoy: first.quarterly_revenue_growth_yoy,
+      next_fy_eps_estimate: first.next_fy_eps_estimate,
+      eps_revision_up_30d: first.eps_revision_up_30d,
+      eps_revision_down_30d: first.eps_revision_down_30d,
+      eps_growth_pct: first.eps_growth_pct,
+      message: first.message,
+      theme_ids,
+      theme_labels,
+    };
+  });
+}
+
 type NarrativeItem = {
   id: number;
   statement: string;
@@ -358,11 +408,18 @@ function ThemeSection({
   );
 }
 
+type BasketViewMode = "theme" | "ticker";
+
 export default function BasketPage() {
+  const [viewMode, setViewMode] = useState<BasketViewMode>("theme");
   const [items, setItems] = useState<BasketItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [metricsLoading, setMetricsLoading] = useState<Set<number>>(new Set());
+  const [tickerRows, setTickerRows] = useState<BasketTickerRow[]>([]);
+  const [tickerLoading, setTickerLoading] = useState(false);
+  const [tickerMetricsLoading, setTickerMetricsLoading] = useState(false);
+  const [tickerError, setTickerError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [createLabel, setCreateLabel] = useState("");
   const [createDesc, setCreateDesc] = useState("");
@@ -426,9 +483,74 @@ export default function BasketPage() {
       });
   }, []);
 
+  const fetchTickers = useCallback(() => {
+    setTickerLoading(true);
+    setTickerError(null);
+    setTickerMetricsLoading(false);
+    // Fast path: get theme + symbol list only (no market data)
+    fetch(`${API_BASE}/basket/tickers?include_metrics=false`, { cache: "no-store" })
+      .then((res) => {
+        if (!res.ok) throw new Error(res.statusText);
+        return res.json();
+      })
+      .then((data: BasketTickerRow[]) => {
+        const rows = Array.isArray(data) ? data : [];
+        setTickerRows(rows);
+        setTickerLoading(false);
+        if (rows.length === 0) return;
+        // Load metrics in parallel by theme (one request per theme)
+        const themeIds = [...new Set(rows.map((r) => r.theme_id))];
+        setTickerMetricsLoading(true);
+        Promise.all(
+          themeIds.map((themeId) =>
+            fetch(`${API_BASE}/themes/${themeId}/instruments/summary`, { cache: "no-store" }).then(
+              (r) => (r.ok ? r.json() : Promise.resolve([] as InstrumentSummary[]))
+            )
+          )
+        )
+          .then((summariesByTheme) => {
+            const byTheme = new Map<number, InstrumentSummary[]>();
+            themeIds.forEach((id, i) => byTheme.set(id, Array.isArray(summariesByTheme[i]) ? summariesByTheme[i] : []));
+            setTickerRows((prev) =>
+              prev.map((row) => {
+                const summaryList = byTheme.get(row.theme_id) ?? [];
+                const inv = summaryList.find((s) => s.id === row.id);
+                if (!inv) return row;
+                return {
+                  ...row,
+                  last_close: inv.last_close,
+                  pct_1m: inv.pct_1m,
+                  pct_3m: inv.pct_3m,
+                  pct_ytd: inv.pct_ytd,
+                  forward_pe: inv.forward_pe,
+                  peg_ratio: inv.peg_ratio,
+                  latest_rsi: inv.latest_rsi,
+                  quarterly_earnings_growth_yoy: inv.quarterly_earnings_growth_yoy,
+                  quarterly_revenue_growth_yoy: inv.quarterly_revenue_growth_yoy,
+                  next_fy_eps_estimate: inv.next_fy_eps_estimate,
+                  eps_revision_up_30d: inv.eps_revision_up_30d,
+                  eps_revision_down_30d: inv.eps_revision_down_30d,
+                  eps_growth_pct: inv.eps_growth_pct,
+                  message: inv.message,
+                };
+              })
+            );
+          })
+          .finally(() => setTickerMetricsLoading(false));
+      })
+      .catch((e) => {
+        setTickerError(e instanceof Error ? e.message : "Failed to load tickers");
+        setTickerLoading(false);
+      });
+  }, []);
+
   useEffect(() => {
     fetchBasket();
   }, [fetchBasket]);
+
+  useEffect(() => {
+    if (viewMode === "ticker") fetchTickers();
+  }, [viewMode, fetchTickers]);
 
   const handleCreateTheme = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -466,16 +588,35 @@ export default function BasketPage() {
           <div>
             <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">My Basket</h1>
             <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-              Themes you follow. Expand a theme to see tickers and live-style price updates.
+              {viewMode === "theme"
+                ? "Themes you follow. Expand a theme to see tickers and live-style price updates."
+                : "All tickers across your followed themes. Sort by theme or symbol."}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowCreate(!showCreate)}
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          >
-            {showCreate ? "Cancel" : "Create theme"}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">View:</span>
+            <button
+              type="button"
+              onClick={() => setViewMode("theme")}
+              className={`rounded-lg px-2.5 py-1 text-xs font-medium ${viewMode === "theme" ? "bg-zinc-200 dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"}`}
+            >
+              By theme
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("ticker")}
+              className={`rounded-lg px-2.5 py-1 text-xs font-medium ${viewMode === "ticker" ? "bg-zinc-200 dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"}`}
+            >
+              By ticker
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCreate(!showCreate)}
+              className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              {showCreate ? "Cancel" : "Create theme"}
+            </button>
+          </div>
         </div>
 
         {showCreate && (
@@ -526,28 +667,137 @@ export default function BasketPage() {
           </form>
         )}
 
-        {loading && (
-          <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
-        )}
-        {error && (
-          <p className="mt-6 text-sm text-red-600 dark:text-red-400">{error}</p>
-        )}
-        {!loading && !error && items.length === 0 && (
-          <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">
-            Your basket is empty. Follow themes from the Themes page to add them here.
-          </p>
-        )}
-        {!loading && !error && items.length > 0 && (
-          <div className="mt-6 space-y-4">
-            {items.map((item) => (
-              <ThemeSection
-                key={item.id}
-                item={item}
-                onUnfollowRefetch={fetchBasket}
-                metricsLoading={metricsLoading.has(item.id)}
-              />
-            ))}
-          </div>
+        {viewMode === "ticker" ? (
+          <>
+            {tickerLoading && (
+              <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">Loading tickers…</p>
+            )}
+            {!tickerLoading && tickerError && (
+              <p className="mt-6 text-sm text-red-600 dark:text-red-400">{tickerError}</p>
+            )}
+            {!tickerLoading && !tickerError && tickerRows.length === 0 && (
+              <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">
+                No tickers in your basket. Follow themes and add tickers on their theme pages.
+              </p>
+            )}
+            {!tickerLoading && !tickerError && tickerRows.length > 0 && (
+              <>
+                {tickerMetricsLoading && (
+                  <p className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">Loading metrics…</p>
+                )}
+                <div className="mt-6 overflow-x-auto rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+                <table className="w-full min-w-[900px] text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-zinc-200 dark:border-zinc-700">
+                      <th className="py-2 pl-5 pr-5 font-medium text-zinc-600 dark:text-zinc-400">Symbol</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">Price</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">1M</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">3M</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">YTD</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">Fwd PE</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">PEG</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">Next FY EPS</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="Revisions up (30d)">Rev ↑</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="Revisions down (30d)">Rev ↓</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="(Next FY EPS estimate − sum of last 4 reported quarters) / sum of last 4 reported × 100">EPS gr%</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="From OVERVIEW: quarterly earnings growth year-over-year.">Qtr EPS YoY %</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">RSI</th>
+                      <th className="py-2 pl-3 font-medium text-zinc-600 dark:text-zinc-400">Theme</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dedupeTickerRowsBySymbol(tickerRows).map((t) => (
+                      <tr key={t.symbol} className="border-b border-zinc-100 last:border-0 dark:border-zinc-800">
+                        <td className="py-2 pl-5 pr-5 font-medium text-zinc-900 dark:text-zinc-100">
+                          {t.symbol}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums text-zinc-800 dark:text-zinc-200">
+                          {fmtPrice(t.last_close)}
+                        </td>
+                        <td className={`py-2 px-2 tabular-nums ${(t.pct_1m ?? 0) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                          {fmtPct(t.pct_1m)}
+                        </td>
+                        <td className={`py-2 px-2 tabular-nums ${(t.pct_3m ?? 0) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                          {fmtPct(t.pct_3m)}
+                        </td>
+                        <td className={`py-2 px-2 tabular-nums ${(t.pct_ytd ?? 0) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                          {fmtPct(t.pct_ytd)}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
+                          {fmtNum(t.forward_pe)}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
+                          {fmtNum(t.peg_ratio)}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
+                          {t.next_fy_eps_estimate != null ? String(t.next_fy_eps_estimate) : "—"}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums text-emerald-600 dark:text-emerald-400">
+                          {t.eps_revision_up_30d != null ? String(t.eps_revision_up_30d) : "—"}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums text-red-600 dark:text-red-400">
+                          {t.eps_revision_down_30d != null ? String(t.eps_revision_down_30d) : "—"}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
+                          {t.eps_growth_pct != null ? (
+                            <span title="(Next FY EPS estimate − sum of last 4 reported) / sum of last 4 reported × 100">{t.eps_growth_pct}%</span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
+                          {t.quarterly_earnings_growth_yoy != null ? `${t.quarterly_earnings_growth_yoy}%` : "—"}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
+                          {fmtNum(t.latest_rsi)}
+                        </td>
+                        <td className="py-2 pl-3">
+                          <span className="flex flex-wrap gap-x-1.5 gap-y-0.5">
+                            {t.theme_ids.map((themeId, i) => (
+                              <Link
+                                key={themeId}
+                                href={`/themes/${themeId}`}
+                                className="font-medium text-zinc-700 hover:underline dark:text-zinc-300"
+                              >
+                                {t.theme_labels[i] || `Theme ${themeId}`}
+                              </Link>
+                            ))}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            {loading && (
+              <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+            )}
+            {!loading && error && (
+              <p className="mt-6 text-sm text-red-600 dark:text-red-400">{error}</p>
+            )}
+            {!loading && !error && items.length === 0 && (
+              <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">
+                Your basket is empty. Follow themes from the Themes page to add them here.
+              </p>
+            )}
+            {!loading && !error && items.length > 0 && (
+              <div className="mt-6 space-y-4">
+                {items.map((item) => (
+                  <ThemeSection
+                    key={item.id}
+                    item={item}
+                    onUnfollowRefetch={fetchBasket}
+                    metricsLoading={metricsLoading.has(item.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </main>
     </div>

@@ -498,3 +498,28 @@ class InstrumentSummaryOut(BaseModel):
     eps_growth_pct: Optional[float] = None
     message: Optional[str] = None
 
+
+class BasketTickerRowOut(BaseModel):
+    """One ticker in the basket with theme tag (for flat ticker-only basket view)."""
+    theme_id: int
+    canonical_label: str
+    id: int
+    symbol: str
+    display_name: Optional[str] = None
+    type: str = "stock"
+    source: str = "manual"
+    last_close: Optional[float] = None
+    pct_1m: Optional[float] = None
+    pct_3m: Optional[float] = None
+    pct_ytd: Optional[float] = None
+    forward_pe: Optional[float] = None
+    peg_ratio: Optional[float] = None
+    latest_rsi: Optional[float] = None
+    quarterly_earnings_growth_yoy: Optional[float] = None
+    quarterly_revenue_growth_yoy: Optional[float] = None
+    next_fy_eps_estimate: Optional[float] = None
+    eps_revision_up_30d: Optional[int] = None
+    eps_revision_down_30d: Optional[int] = None
+    eps_growth_pct: Optional[float] = None
+    message: Optional[str] = None
+

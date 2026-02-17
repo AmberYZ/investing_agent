@@ -79,8 +79,8 @@ export function ThemeNetworkClient({
 
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
         {viewMode === "all"
-          ? `Themes that appeared together in the same documents over the last ${months} months.`
-          : `Themes that appeared together in the same documents in ${snapshots?.[selectedPeriodIndex]?.period_label ?? "this period"}.`}{" "}
+          ? `Active themes that appeared together in the same documents over the last ${months} months (themes with evidence in the last 30 days).`
+          : `Active themes that appeared together in the same documents in ${snapshots?.[selectedPeriodIndex]?.period_label ?? "this period"}.`}{" "}
         Node size = volume; line thickness = co-occurrence. <strong>Hover</strong> a theme to see its full name and highlight related themes; click to open.
       </p>
 
