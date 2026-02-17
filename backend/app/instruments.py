@@ -183,9 +183,14 @@ def extract_instruments_from_theme_documents(db: Session, theme_id: int) -> list
     return add_instruments_from_documents(db, theme_id, symbols)
 
 
-def suggest_instruments_llm(theme_label: str, theme_description: Optional[str] = None) -> list[dict]:
+def suggest_instruments_llm(
+    theme_label: str,
+    theme_description: Optional[str] = None,
+    recent_narratives: Optional[str] = None,
+) -> list[dict]:
     """
     Use LLM to suggest relevant tickers/ETFs for a theme. Returns list of {symbol, display_name?, type}.
+    Optionally pass recent_narratives (e.g. theme narratives from the last 7 days) for better context.
     """
     try:
         from app.llm.provider import chat_completion
@@ -203,6 +208,11 @@ def suggest_instruments_llm(theme_label: str, theme_description: Optional[str] =
     user = f"Theme: {theme_label}"
     if theme_description:
         user += f"\nDescription: {theme_description}"
+    if recent_narratives and recent_narratives.strip():
+        truncated = recent_narratives.strip()[:8000]
+        if len(recent_narratives.strip()) > 8000:
+            truncated += "\n..."
+        user += f"\nRecent narratives (last 7 days):\n{truncated}"
     user += "\nReturn only the JSON array, no other text."
     try:
         raw = chat_completion(system=system, user=user, max_tokens=512)

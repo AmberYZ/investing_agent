@@ -460,6 +460,22 @@ class SuggestInstrumentsOut(BaseModel):
     suggestions: list[SuggestedInstrumentItem] = Field(default_factory=list)
 
 
+class InstrumentSearchItem(BaseModel):
+    """One result from Alpha Vantage SYMBOL_SEARCH (typeahead when adding tickers)."""
+    symbol: str
+    name: Optional[str] = None
+    type: str = "stock"
+    region: Optional[str] = None
+    currency: Optional[str] = None
+    match_score: float = 0.0
+
+
+class InstrumentSearchOut(BaseModel):
+    """Ticker search results for add-instrument typeahead."""
+    matches: list[InstrumentSearchItem] = Field(default_factory=list)
+    message: Optional[str] = None
+
+
 class InstrumentSummaryOut(BaseModel):
     """Instrument with price and valuation metrics for basket ticker rows."""
     id: int

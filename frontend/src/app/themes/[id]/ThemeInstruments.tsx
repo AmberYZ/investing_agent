@@ -32,6 +32,15 @@ type SuggestedItem = {
   type: string;
 };
 
+type InstrumentSearchItem = {
+  symbol: string;
+  name?: string | null;
+  type: string;
+  region?: string | null;
+  currency?: string | null;
+  match_score?: number;
+};
+
 type PricePoint = {
   date: string;
   open: number;
@@ -154,6 +163,11 @@ export function ThemeInstruments({
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [fromDocSuggestions, setFromDocSuggestions] = useState<SuggestedItem[]>([]);
   const [fromDocsSuggestLoading, setFromDocsSuggestLoading] = useState(false);
+  const [searchMatches, setSearchMatches] = useState<InstrumentSearchItem[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const symbolSearchRef = useRef<HTMLDivElement>(null);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [viewMode, setViewMode] = useState<"single" | "basket">("single");
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
@@ -178,6 +192,49 @@ export function ThemeInstruments({
     setLoading(true);
     fetchInstruments().finally(() => setLoading(false));
   }, [fetchInstruments]);
+
+  // Debounced Alpha Vantage symbol search when user types in the Symbol box
+  useEffect(() => {
+    const q = addSymbol.trim();
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = null;
+    }
+    if (q.length < 2) {
+      setSearchMatches([]);
+      setSearchOpen(false);
+      return;
+    }
+    searchDebounceRef.current = setTimeout(async () => {
+      searchDebounceRef.current = null;
+      setSearchLoading(true);
+      setSearchOpen(true);
+      try {
+        const res = await fetch(`${API_BASE}/instruments/search?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        setSearchMatches(data.matches ?? []);
+        if (data.message) setSearchMatches((prev) => prev);
+      } catch {
+        setSearchMatches([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 300);
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+  }, [addSymbol]);
+
+  // Close search dropdown when clicking outside
+  useEffect(() => {
+    const onMouseDown = (e: MouseEvent) => {
+      if (symbolSearchRef.current && !symbolSearchRef.current.contains(e.target as Node)) {
+        setSearchOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, []);
 
   useEffect(() => {
     if (viewMode === "single" && instruments.length > 0 && !selectedSymbol) {
@@ -255,8 +312,35 @@ export function ThemeInstruments({
       });
       if (res.ok) {
         setAddSymbol("");
+        setSearchOpen(false);
+        setSearchMatches([]);
         await fetchInstruments();
         if (instruments.length === 0) setSelectedSymbol(symbol);
+      }
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleAddFromSearch = async (match: InstrumentSearchItem) => {
+    setAdding(true);
+    try {
+      const res = await fetch(`${API_BASE}/themes/${themeId}/instruments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: match.symbol,
+          display_name: match.name ?? null,
+          type: match.type || "stock",
+          source: "manual",
+        }),
+      });
+      if (res.ok) {
+        setAddSymbol("");
+        setSearchOpen(false);
+        setSearchMatches([]);
+        await fetchInstruments();
+        if (instruments.length === 0) setSelectedSymbol(match.symbol);
       }
     } finally {
       setAdding(false);
@@ -376,14 +460,49 @@ export function ThemeInstruments({
       </p>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <input
-          type="text"
-          placeholder="Symbol (e.g. AAPL)"
-          value={addSymbol}
-          onChange={(e) => setAddSymbol(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-          className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-        />
+        <div ref={symbolSearchRef} className="relative inline-block">
+          <input
+            type="text"
+            placeholder="Symbol (e.g. AAPL)"
+            value={addSymbol}
+            onChange={(e) => setAddSymbol(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              if (searchOpen && searchMatches.length > 0) {
+                e.preventDefault();
+                handleAddFromSearch(searchMatches[0]);
+              } else {
+                handleAdd();
+              }
+            }}
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+          />
+          {searchOpen && (searchMatches.length > 0 || searchLoading) && (
+            <ul
+              className="absolute left-0 top-full z-50 mt-1 max-h-48 w-72 overflow-auto rounded-lg border border-zinc-300 bg-white py-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+              role="listbox"
+            >
+              {searchLoading ? (
+                <li className="px-3 py-2 text-sm text-zinc-500 dark:text-zinc-400">Searching…</li>
+              ) : (
+                searchMatches.map((m) => (
+                  <li
+                    key={`${m.symbol}-${m.region ?? ""}`}
+                    role="option"
+                    className="cursor-pointer px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      handleAddFromSearch(m);
+                    }}
+                  >
+                    <span className="font-medium text-zinc-900 dark:text-zinc-100">{m.symbol}</span>
+                    {m.name ? <span className="ml-2 text-zinc-500 dark:text-zinc-400">{m.name}</span> : null}
+                  </li>
+                ))
+              )}
+            </ul>
+          )}
+        </div>
         <button
           type="button"
           onClick={handleAdd}

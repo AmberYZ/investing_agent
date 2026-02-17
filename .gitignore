@@ -29,6 +29,13 @@ backend/logs/
 *.log
 .env
 
+
+# Backups
+dev.db-shm.backup-20260217
+dev.db-wal.backup-20260217
+dev.db.backup-20260217
+
+
 # Node / Next
 node_modules/
 .next/

@@ -99,6 +99,8 @@ from app.schemas import (
     InstrumentSummaryOut,
     SuggestInstrumentsOut,
     SuggestedInstrumentItem,
+    InstrumentSearchOut,
+    InstrumentSearchItem,
     ThemeBasketMetricsOut,
 )
 from app.analytics import (
@@ -1520,6 +1522,26 @@ def get_theme_metrics(
     return _theme_metrics_from_evidence(db, theme_id, since)
 
 
+@app.get("/instruments/search", response_model=InstrumentSearchOut)
+def search_instruments(
+    q: str = Query(..., min_length=1, max_length=64),
+):
+    """Search tickers by keyword (company name or symbol) via Alpha Vantage SYMBOL_SEARCH for typeahead when adding instruments."""
+    from app.market_data import search_symbols
+    result = search_symbols(q)
+    return InstrumentSearchOut(
+        matches=[InstrumentSearchItem(
+            symbol=m["symbol"],
+            name=m.get("name"),
+            type=m.get("type") or "stock",
+            region=m.get("region"),
+            currency=m.get("currency"),
+            match_score=m.get("match_score", 0.0),
+        ) for m in result.get("matches") or []],
+        message=result.get("message"),
+    )
+
+
 @app.get("/themes/{theme_id}/instruments", response_model=list[ThemeInstrumentOut])
 def list_theme_instruments(theme_id: int, db: Session = Depends(get_db)):
     """List stocks/ETFs associated with this theme (manual, from_documents, llm_suggested)."""
@@ -1661,8 +1683,18 @@ def suggest_theme_instruments(theme_id: int, db: Session = Depends(get_db)):
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
+    # Narratives from the past 7 days (by last_seen) for richer LLM context
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
+    recent = (
+        db.query(Narrative.statement)
+        .filter(Narrative.theme_id == theme_id, Narrative.last_seen >= since)
+        .order_by(Narrative.last_seen.desc())
+        .limit(50)
+        .all()
+    )
+    recent_narratives_text = "\n".join((r[0] or "").strip() for r in recent if (r[0] or "").strip()) if recent else None
     from app.instruments import suggest_instruments_llm
-    items = suggest_instruments_llm(theme.canonical_label, theme.description)
+    items = suggest_instruments_llm(theme.canonical_label, theme.description, recent_narratives=recent_narratives_text)
     return SuggestInstrumentsOut(
         suggestions=[SuggestedInstrumentItem(symbol=x["symbol"], display_name=x.get("display_name"), type=x.get("type") or "stock") for x in items]
     )

@@ -140,6 +140,113 @@ def _is_rate_limit_error(message: str) -> bool:
     return "rate limit" in msg or "too many requests" in msg or "429" in msg or "try after" in msg or "premium" in msg
 
 
+# Symbol search cache: key = normalized keywords, value = (cached_at, list[dict]); short TTL for typeahead
+_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_SEARCH_CACHE_TTL = 300  # 5 minutes
+
+
+def search_symbols(keywords: str) -> dict[str, Any]:
+    """
+    Alpha Vantage SYMBOL_SEARCH: search by company name or ticker for typeahead when adding instruments.
+    Returns {"matches": [...], "message": None or error string}. Uses same throttle as other AV calls;
+    results cached briefly (5 min) to avoid repeated calls while typing.
+    """
+    global _last_request_time
+    keywords = (keywords or "").strip()[:64]
+    out: dict[str, Any] = {"matches": [], "message": None}
+    if not keywords:
+        return out
+
+    api_key = (settings.alpha_vantage_api_key or "").strip()
+    if not api_key:
+        out["message"] = "Alpha Vantage API key not set. Add ALPHA_VANTAGE_API_KEY to .env"
+        return out
+
+    cache_key = keywords.lower()
+    now = time.monotonic()
+    with _lock:
+        if cache_key in _SEARCH_CACHE:
+            cached_at, cached = _SEARCH_CACHE[cache_key]
+            if now - cached_at < _SEARCH_CACHE_TTL:
+                return cached
+            del _SEARCH_CACHE[cache_key]
+        elapsed = now - _last_request_time
+        if elapsed < _min_seconds_between_requests():
+            time.sleep(_min_seconds_between_requests() - elapsed)
+        _last_request_time = time.monotonic()
+
+    try:
+        import httpx
+    except ImportError:
+        out["message"] = "httpx not installed"
+        return out
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.get(
+                BASE_URL,
+                params={"function": "SYMBOL_SEARCH", "keywords": keywords, "apikey": api_key},
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        out["message"] = str(e)
+        if _is_rate_limit_error(out["message"]):
+            out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
+        return out
+
+    with _lock:
+        _last_request_time = time.monotonic()
+
+    if not isinstance(data, dict):
+        return out
+    if "Error Message" in data:
+        out["message"] = data["Error Message"]
+        return out
+    if "Note" in data:
+        note = data["Note"]
+        if _is_rate_limit_error(note):
+            out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
+        else:
+            out["message"] = note
+        return out
+
+    best_matches = data.get("bestMatches") or []
+    for row in best_matches:
+        if not isinstance(row, dict):
+            continue
+        symbol = (row.get("1. symbol") or "").strip()
+        if not symbol:
+            continue
+        name = (row.get("2. name") or "").strip() or None
+        raw_type = (row.get("3. type") or "").strip().lower()
+        if "etf" in raw_type:
+            type_ = "etf"
+        elif raw_type:
+            type_ = raw_type[:16]
+        else:
+            type_ = "stock"
+        region = (row.get("4. region") or "").strip() or None
+        currency = (row.get("8. currency") or "").strip() or None
+        try:
+            match_score = float(row.get("9. matchScore", 0) or 0)
+        except (TypeError, ValueError):
+            match_score = 0.0
+        out["matches"].append({
+            "symbol": symbol,
+            "name": name,
+            "type": type_,
+            "region": region,
+            "currency": currency,
+            "match_score": round(match_score, 4),
+        })
+
+    with _lock:
+        if not out["message"]:
+            _SEARCH_CACHE[cache_key] = (time.monotonic(), out)
+    return out
+
+
 def compute_period_returns(prices: list[dict[str, Any]]) -> dict[str, float | None]:
     """
     Compute 1M, 3M, YTD, 6M % return from a sorted-by-date (asc) prices list.
