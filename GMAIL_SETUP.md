@@ -69,11 +69,13 @@ API_BASE_URL=http://127.0.0.1:8000
 GMAIL_LABEL=Invest_Digest
 ```
 
-Make sure your **backend is running** (e.g. `uvicorn` on port 8000). Then:
+Make sure your **backend is running** (e.g. `uvicorn` on port 8000). Then, from the **repo root**:
 
 ```bash
-python scripts/gmail_to_ingest.py
+python3 scripts/gmail_to_ingest.py
 ```
+
+Use **`python3`** (not `backend/.venv/bin/python`): the script often hangs with the backend venv when using a proxy/VPN. The API’s daily sync uses `python3` by default too.
 
 - **First run**: a browser window opens so you can sign in with the Gmail account that has the label. After you approve, the script saves `scripts/token.json` and continues. You won’t be asked again unless the token is removed or revoked.
 - **Incremental sync**: The script saves the last run date in the state file. On later runs it only fetches messages **after** that date, so runs stay fast. First run fetches all messages in the label.
@@ -82,7 +84,26 @@ python scripts/gmail_to_ingest.py
 
 ---
 
-## 4. Run on a schedule (optional)
+## 4. Run daily with the API server (no cron)
+
+You can have the Gmail script run automatically when the backend API starts, on a daily interval:
+
+1. In repo root `.env`, set:
+   ```bash
+   ENABLE_GMAIL_DAILY_SYNC=true
+   ```
+   Optional: `GMAIL_DAILY_SYNC_INTERVAL_SECONDS=86400` (24h), `GMAIL_DAILY_SYNC_INITIAL_DELAY_SECONDS=60` (first run 1 minute after startup).
+
+2. Install the Gmail script dependencies in the **same** environment that runs the API (e.g. the backend venv), so the subprocess can run the script:
+   ```bash
+   pip install -r scripts/requirements-gmail.txt
+   ```
+
+3. Restart the API server (e.g. `uvicorn app.main:app --port 8000`). A background thread will run the script after the initial delay, then every 24 hours. No separate cron job needed.
+
+---
+
+## 5. Run on a schedule (optional, e.g. cron)
 
 To run the script every 10 minutes (macOS/Linux), add a crontab:
 
@@ -104,13 +125,16 @@ while true; do python scripts/gmail_to_ingest.py; sleep 600; done
 
 ---
 
-## 5. Troubleshooting
+## 6. Troubleshooting
 
 - **“Missing credentials.json”**  
   Put the downloaded OAuth JSON in `scripts/credentials.json` as in step 2.
 
 - **“Access blocked” or “App not verified”**  
   You’re using an “External” app in test mode. In the OAuth consent screen, add your Gmail under **Test users**. You can then sign in; no “verification” request needed for personal use.
+
+- **Connection refused to 127.0.0.1:8000 /ingest-text**  
+  The backend API was not running when the script ran. Start the API first (e.g. `uvicorn app.main:app --port 8000` from the `backend/` directory), then run the script. Failed messages are not marked as processed, so the next run will retry them.
 
 - **HTTP 503 from /ingest-text**  
   Backend may have ingest paused (`PAUSE_INGEST=true`) or queue full. Check backend logs and `.env`.
@@ -127,5 +151,8 @@ while true; do python scripts/gmail_to_ingest.py; sleep 600; done
   - **Proxy:** In `.env` set `HTTPS_PROXY=http://proxy-host:port` (e.g. `HTTPS_PROXY=http://proxy.company.com:8080`) or `HTTP_PROXY=...`. The script reads these and uses them for Gmail API calls. You should then see `Using proxy from HTTPS_PROXY/HTTP_PROXY` when you run the script.
   - **Timeout:** Set `GMAIL_API_TIMEOUT=180` (or higher) in `.env` if connections are slow.
 
+- **Run the script with `python3`, not `backend/.venv/bin/python`**  
+  From repo root use: `python3 scripts/gmail_to_ingest.py`. The backend venv often hangs at “Using proxy” when a proxy/VPN is used; `python3` works. Ensure that Python has the script deps: `pip install -r scripts/requirements-gmail.txt` (for that interpreter). The API’s daily sync uses `python3` by default; to use a different interpreter set `GMAIL_SYNC_PYTHON` in `.env`.
+
 - **No `.venv` in repo root**  
-  The project’s virtualenv may be under `backend/`. From repo root run: `backend/.venv/bin/python scripts/gmail_to_ingest.py`. Or use `python3 scripts/gmail_to_ingest.py` and ensure dependencies are installed for that Python (`pip install -r scripts/requirements-gmail.txt`).
+  The backend venv lives under `backend/`. For the Gmail script, use `python3` as above. For the API and worker, use `backend/.venv/bin/python` as in the main README.

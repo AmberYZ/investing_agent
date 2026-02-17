@@ -97,6 +97,18 @@ class Settings(BaseSettings):
     # Temporary pause: when true, reject all new ingest requests (use while developing on existing data).
     pause_ingest: bool = False
 
+    # Gmail → ingest: when true, run scripts/gmail_to_ingest.py daily in a background thread (started with API server).
+    enable_gmail_daily_sync: bool = False
+    # Interval between runs in seconds (default 24h).
+    gmail_daily_sync_interval_seconds: int = 3600
+    # Delay before first run after startup (seconds); avoids blocking startup.
+    gmail_daily_sync_initial_delay_seconds: int = 60
+    # Subprocess timeout for each script run (seconds).
+    gmail_daily_sync_script_timeout_seconds: int = 1800
+    # Python executable for Gmail script. Default "python3" so the script works with proxy/VPN
+    # (backend .venv often hangs at "Using proxy"). Set to a path to use .venv, or leave unset for python3.
+    gmail_sync_python: str = "python3"
+
 
 settings = Settings()
 

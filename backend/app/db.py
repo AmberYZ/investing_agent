@@ -8,8 +8,8 @@ from app.settings import settings
 
 _connect_args = {}
 if settings.database_url.startswith("sqlite"):
-    # timeout: seconds to wait when DB is locked (avoids "database is locked" with API + worker)
-    _connect_args = {"check_same_thread": False, "timeout": 20}
+    # timeout: seconds to wait when DB is locked (API + worker + threads contend; 60s reduces lock errors)
+    _connect_args = {"check_same_thread": False, "timeout": 60}
 
 # SQLite: use NullPool to avoid pool exhaustion (each request gets a new connection).
 # PostgreSQL/MySQL: use a larger pool so concurrent requests (e.g. themes + N×metrics) don't time out.

@@ -28,10 +28,7 @@ Theme rules
 - No meta-themes: never use "Stock Market" or "Macro Trends"; use specific drivers (e.g. "S&P 500 Earnings", "US Treasury Yields").
 - Use one theme when the document is clearly single-topic; use multiple themes when it discusses several distinct investable topics or theses.
 - Entity test: if the document is primarily about a single company, fund, or asset, the theme label must be just that entity's name (e.g. "BYD", not "BYD expansion" or "BYD international sales").
-
-Overarching theme vs example entities
-- If the document is structured as one investable theme or thesis with multiple entities or names as examples or picks (e.g. "our selection of AI risk-proof long ideas" with eight stocks), use ONE theme whose label is the thematic concept (e.g. "AI risk-proof / AI displacement resilience", "Quality compounders", "European SMID value"), not one theme per entity.
-- Put each example entity or pick as a sub_theme (e.g. "Asmodee", "Bunzl") or weave the entity name into the narrative text, so the theme remains trackable when another source later publishes different names under the same concept.
+- Overarching theme vs example entities: If the document is structured as one investable theme or thesis with multiple entities or names as examples or picks (e.g. "our selection of AI risk-proof long ideas" with eight stocks), use ONE theme whose label is the thematic concept (e.g. "AI risk-proof / AI displacement resilience", "Quality compounders", "European SMID value"), not one theme per entity. Put each example entity or pick as a sub_theme (e.g. "Asmodee", "Bunzl") or weave the entity name into the narrative text, so the theme remains trackable when another source later publishes different names under the same concept.
 - Use multiple themes (one per entity) only when the document is genuinely multi-topic—e.g. separate deep dives on unrelated companies—not when it is a single thematic list or "picks under one idea".
 
 Sub-theme

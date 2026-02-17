@@ -352,6 +352,20 @@ def upsert_narrative(
     return n
 
 
+def _commit_with_retry(db: Session, max_attempts: int = 5) -> None:
+    """Commit with retries on SQLite 'database is locked' (API + worker contention)."""
+    for attempt in range(max_attempts):
+        try:
+            db.commit()
+            return
+        except OperationalError as e:
+            if "locked" in str(e).lower() and attempt < max_attempts - 1:
+                logger.warning("Database locked on commit (attempt %s/%s), retrying in 1s...", attempt + 1, max_attempts)
+                time.sleep(1)
+            else:
+                raise
+
+
 def process_job(db: Session, job: IngestJob) -> None:
     storage = get_storage()
     doc = db.query(Document).filter(Document.id == job.document_id).one()
@@ -359,7 +373,7 @@ def process_job(db: Session, job: IngestJob) -> None:
     job.status = "processing"
     job.started_at = dt.datetime.now(dt.timezone.utc)
     job.error_message = None
-    db.commit()
+    _commit_with_retry(db)
     logger.info("Starting ingest job %s for document %s", job.id, doc.id)
 
     try:
@@ -369,7 +383,7 @@ def process_job(db: Session, job: IngestJob) -> None:
         job.status = "error"
         job.error_message = str(e)
         job.finished_at = dt.datetime.now(dt.timezone.utc)
-        db.commit()
+        _commit_with_retry(db)
         JOB_PROCESSED.labels(status="error").inc()
         logger.exception("Failed ingest job %s for document %s: %s", job.id, doc.id, e)
         # Do not re-raise: record the failure and let the worker continue to the next job.
@@ -611,7 +625,7 @@ def run_loop(poll_seconds: int = 2) -> None:
                     job.started_at = now
                     job.error_message = None
                     job_ids.append(job.id)
-                db.commit()
+                _commit_with_retry(db)
             finally:
                 db.close()
 

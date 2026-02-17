@@ -3,8 +3,14 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import logging
+import os
 import re
+import shutil
+import subprocess
+import sys
+import threading
 import time
+from pathlib import Path
 from typing import Optional, Union
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
@@ -161,12 +167,109 @@ async def _metrics_middleware(request, call_next):
     return response
 
 
+def _gmail_daily_sync_loop() -> None:
+    """Run scripts/gmail_to_ingest.py on an interval (e.g. daily). Runs in a daemon thread."""
+    delay = getattr(settings, "gmail_daily_sync_initial_delay_seconds", 60) or 60
+    interval = getattr(settings, "gmail_daily_sync_interval_seconds", 86400) or 86400
+    script_timeout = getattr(settings, "gmail_daily_sync_script_timeout_seconds", 1800) or 1800
+    logger.info(
+        "Gmail daily sync loop started; first run in %ss, then every %ss (script timeout %ss)",
+        delay,
+        interval,
+        script_timeout,
+    )
+    if delay > 0:
+        time.sleep(delay)
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    script = repo_root / "scripts" / "gmail_to_ingest.py"
+    if not script.exists():
+        logger.warning("Gmail daily sync enabled but script not found at %s; skipping.", script)
+        return
+
+    def _gmail_script_python() -> str:
+        """Python executable for the Gmail script. Default python3 so script works with proxy (venv often hangs)."""
+        explicit = getattr(settings, "gmail_sync_python", "python3") or "python3"
+        exe = str(explicit).strip()
+        if not exe:
+            exe = "python3"
+        if os.path.sep in exe or (os.path.altsep and (os.path.altsep in exe)):
+            return exe if os.path.isfile(exe) else (shutil.which(exe) or exe)
+        resolved = shutil.which(exe)
+        return resolved or exe
+
+    # Build subprocess env: ensure repo .env is applied so proxy/API_BASE_URL/etc. are set
+    # (backend may have been started without inheriting shell env, so copy from .env explicitly).
+    def _gmail_sync_env() -> dict[str, str]:
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        env["GMAIL_SYNC_HEADLESS"] = "1"
+        try:
+            from dotenv import dotenv_values
+            env_file = repo_root / ".env"
+            if env_file.exists():
+                for k, v in dotenv_values(env_file).items():
+                    if k and v is not None and str(v).strip() != "":
+                        env[k] = str(v).strip()
+        except Exception as e:
+            logger.warning("Gmail daily sync: could not load .env for subprocess: %s", e)
+        return env
+
+    while True:
+        try:
+            logger.info("Gmail daily sync: running script now (after delay)")
+            env = _gmail_sync_env()
+            python_exe = _gmail_script_python()
+            proc = subprocess.Popen(
+                [python_exe, str(script)],
+                cwd=str(repo_root),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            def log_stdout():
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    if line:
+                        logger.info("Gmail sync: %s", line)
+            reader = threading.Thread(target=log_stdout, daemon=True)
+            reader.start()
+            try:
+                proc.wait(timeout=script_timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                logger.warning("Gmail daily sync timed out after %ss", script_timeout)
+            reader.join(timeout=2.0)
+            logger.info(
+                "Gmail daily sync run finished: returncode=%s",
+                proc.returncode,
+            )
+            if proc.returncode != 0:
+                logger.warning("Gmail daily sync script exited with code %s", proc.returncode)
+        except Exception as e:
+            logger.exception("Gmail daily sync failed: %s", e)
+        time.sleep(interval)
+
+
 @app.on_event("startup")
 def _startup():
     from app.logging_config import setup_logging
     setup_logging(settings.log_file)
     init_db()
     Base.metadata.create_all(bind=engine)  # MVP: simple create_all
+    enable_sync = getattr(settings, "enable_gmail_daily_sync", False)
+    logger.info("Gmail daily sync: enable_gmail_daily_sync=%s", enable_sync)
+    if enable_sync:
+        t = threading.Thread(target=_gmail_daily_sync_loop, daemon=True, name="gmail_daily_sync")
+        t.start()
+        logger.info(
+            "Gmail daily sync thread started (interval=%ss, first run in %ss)",
+            getattr(settings, "gmail_daily_sync_interval_seconds", 86400),
+            getattr(settings, "gmail_daily_sync_initial_delay_seconds", 60),
+        )
 
 
 @app.get("/health")

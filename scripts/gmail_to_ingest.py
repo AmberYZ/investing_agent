@@ -17,6 +17,7 @@ Environment:
   GMAIL_STATE_PATH      - Path to state file for processed message IDs (default: script_dir/.gmail_ingest_state).
   GMAIL_API_TIMEOUT     - Timeout in seconds for Gmail API calls (default: 120). Use a higher value if using VPN.
   HTTPS_PROXY / HTTP_PROXY - Optional proxy URL (e.g. http://proxy:8080) if your network requires it.
+  GMAIL_SYNC_HEADLESS   - When 1, script exits instead of opening browser if token expired (used by API daily sync).
 """
 
 from __future__ import annotations
@@ -66,10 +67,7 @@ MAX_STATE_IDS = 2000
 
 
 def _get_proxy_info():
-    """Build ProxyInfo from HTTPS_PROXY or HTTP_PROXY so Gmail API (HTTPS) uses the proxy.
-    httplib2.proxy_info_from_environment() defaults to method='http', so it does not read
-    HTTPS_PROXY; we explicitly read both and use proxy_info_from_url for HTTPS.
-    """
+    """Build ProxyInfo from HTTPS_PROXY or HTTP_PROXY so Gmail API (HTTPS) uses the proxy."""
     proxy_url = (
         os.environ.get("HTTPS_PROXY")
         or os.environ.get("https_proxy")
@@ -103,6 +101,13 @@ def _get_credentials():
                     file=sys.stderr,
                 )
                 sys.exit(1)
+            if os.environ.get("GMAIL_SYNC_HEADLESS") == "1":
+                print(
+                    "Gmail token missing or expired and GMAIL_SYNC_HEADLESS=1 (running from API). "
+                    "Run 'python scripts/gmail_to_ingest.py' once manually to sign in and save a new token.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
             creds = flow.run_local_server(port=0)
         with open(token_path, "w") as f:
@@ -114,7 +119,6 @@ def _decode_body(data: dict | None) -> str:
     if not data or "data" not in data:
         return ""
     raw = data["data"]
-    # Gmail API uses base64url
     pad = 4 - len(raw) % 4
     if pad != 4:
         raw += "=" * pad
@@ -187,37 +191,8 @@ def _get_header(msg: dict, name: str) -> str:
     return ""
 
 
-def load_state(state_path: str) -> tuple[str | None, set[str]]:
-    """Load last_synced date (YYYY/MM/DD) and set of processed message IDs. last_synced is None on first run."""
-    last_synced: str | None = None
-    ids: set[str] = set()
-    if not os.path.exists(state_path):
-        return None, ids
-    with open(state_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith("last_synced="):
-                last_synced = line.split("=", 1)[1].strip()
-            else:
-                ids.add(line)
-    return last_synced, ids
-
-
-def save_state(state_path: str, last_synced: str, ids: set[str]) -> None:
-    """Save last_synced date and processed IDs for incremental sync."""
-    lst = list(ids)
-    if len(lst) > MAX_STATE_IDS:
-        lst = lst[-MAX_STATE_IDS:]
-    with open(state_path, "w") as f:
-        f.write(f"last_synced={last_synced}\n")
-        for i in lst:
-            f.write(i + "\n")
-
-
 def _resolve_label_ids(service, label_names: list[str]) -> list[str]:
-    """Resolve label names (e.g. Invest_Digest, Newsletter) to Gmail API label IDs. Case-insensitive."""
+    """Resolve label names to Gmail API label IDs. Case-insensitive."""
     label_names = [n.strip() for n in label_names if (n or "").strip()]
     if not label_names:
         print("GMAIL_LABEL is empty. Set it to one or more label names, comma-separated (e.g. Invest_Digest).", file=sys.stderr)
@@ -248,6 +223,35 @@ def _resolve_label_ids(service, label_names: list[str]) -> list[str]:
     return ids
 
 
+def load_state(state_path: str) -> tuple[str | None, set[str]]:
+    """Load last_synced date (YYYY/MM/DD) and set of processed message IDs."""
+    last_synced: str | None = None
+    ids: set[str] = set()
+    if not os.path.exists(state_path):
+        return None, ids
+    with open(state_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("last_synced="):
+                last_synced = line.split("=", 1)[1].strip()
+            else:
+                ids.add(line)
+    return last_synced, ids
+
+
+def save_state(state_path: str, last_synced: str, ids: set[str]) -> None:
+    """Save last_synced date and processed IDs for incremental sync."""
+    lst = list(ids)
+    if len(lst) > MAX_STATE_IDS:
+        lst = lst[-MAX_STATE_IDS:]
+    with open(state_path, "w") as f:
+        f.write(f"last_synced={last_synced}\n")
+        for i in lst:
+            f.write(i + "\n")
+
+
 def main() -> None:
     api_base = (os.environ.get("API_BASE_URL") or "http://127.0.0.1:8000").rstrip("/")
     label_env = os.environ.get("GMAIL_LABEL") or "Invest_Digest"
@@ -256,7 +260,6 @@ def main() -> None:
     state_path = os.environ.get("GMAIL_STATE_PATH") or str(script_dir / ".gmail_ingest_state")
 
     creds = _get_credentials()
-    # Longer timeout and optional proxy for VPN/proxy environments
     timeout_secs = int(os.environ.get("GMAIL_API_TIMEOUT", "120"))
     proxy_info = _get_proxy_info()
     if proxy_info:
@@ -266,10 +269,8 @@ def main() -> None:
     service = build("gmail", "v1", http=authorized_http)
 
     label_ids = _resolve_label_ids(service, label_names)
-    # Map label id -> name so we can set source_name to "gmail · LabelName" per message
     label_id_to_name = dict(zip(label_ids, label_names))
     last_synced, processed = load_state(state_path)
-    # Fetch messages from each label (API uses AND for multiple IDs, so we query per label and merge)
     all_message_ids: set[str] = set()
     list_kw_base: dict = {"userId": "me", "maxResults": 100}
     if last_synced:
@@ -289,6 +290,7 @@ def main() -> None:
         raise SystemExit(1) from e
     messages = [{"id": mid} for mid in all_message_ids]
     new_count = 0
+    had_failure = False
     for m in messages:
         mid = m["id"]
         if mid in processed:
@@ -311,7 +313,6 @@ def main() -> None:
                     published_at = parsedate_to_datetime(date_hdr).isoformat()
                 except Exception:
                     pass
-            # Source: "gmail · LabelName" using the label(s) this message belongs to
             message_label_ids = set(full.get("labelIds") or [])
             matched_labels = [label_id_to_name[lid] for lid in message_label_ids if lid in label_id_to_name]
             source_name = "gmail · " + ", ".join(matched_labels) if matched_labels else "gmail"
@@ -322,22 +323,30 @@ def main() -> None:
                     "content_type": content_type,
                     "title": subject[:500],
                     "published_at": published_at,
-                    "source_type": "gmail",
                     "source_name": source_name,
                 },
                 timeout=60,
             )
             if r.status_code in (200, 201):
                 new_count += 1
+                processed.add(mid)
                 print(f"Ingested: {subject[:60]}...")
             else:
+                had_failure = True
                 print(f"HTTP {r.status_code} for {subject[:40]}: {r.text[:200]}", file=sys.stderr)
         except Exception as e:
+            had_failure = True
             print(f"Error processing message {mid}: {e}", file=sys.stderr)
-        processed.add(mid)
+            if "Connection refused" in str(e) or "127.0.0.1" in str(e):
+                print(
+                    "Backend API not reachable. Start the API (e.g. uvicorn app.main:app --port 8000) and re-run.",
+                    file=sys.stderr,
+                )
 
     today = date.today().strftime("%Y/%m/%d")
-    save_state(state_path, today, processed)
+    # Only advance last_synced when no failures, so next run will retry failed messages (same date range).
+    next_synced = (last_synced if had_failure and last_synced else today)
+    save_state(state_path, next_synced, processed)
     if new_count:
         print(f"Done. Ingested {new_count} new message(s).")
     else:

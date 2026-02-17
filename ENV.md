@@ -38,6 +38,10 @@ cp .env.example .env
 | `THEME_SIMILARITY_EMBEDDING_THRESHOLD` | No | `0.92` | Min cosine similarity (0–1) to merge themes via embedding. |
 | `THEME_SIMILARITY_TEXT_THRESHOLD` | No | `0.7` | Min Dice coefficient (0–1) to merge themes via token similarity. |
 | `LOG_FILE` | No | — | Optional path for backend log file (worker + API). Example: `backend/logs/backend.log`. Leave unset for stdout only. |
+| `ENABLE_GMAIL_DAILY_SYNC` | No | `false` | When `true`, the API server runs `scripts/gmail_to_ingest.py` in a background thread: first run after `GMAIL_DAILY_SYNC_INITIAL_DELAY_SECONDS`, then every `GMAIL_DAILY_SYNC_INTERVAL_SECONDS`. No separate cron needed. |
+| `GMAIL_DAILY_SYNC_INTERVAL_SECONDS` | No | `86400` | Seconds between Gmail sync runs (default 24h). Used when `ENABLE_GMAIL_DAILY_SYNC=true`. |
+| `GMAIL_DAILY_SYNC_INITIAL_DELAY_SECONDS` | No | `60` | Delay in seconds before the first run after API startup. Used when `ENABLE_GMAIL_DAILY_SYNC=true`. |
+| `GMAIL_SYNC_PYTHON` | No | `python3` | Interpreter used by the API to run the Gmail script. Default `python3` so the script works with proxy/VPN (backend .venv often hangs). Run the script manually with the same: `python3 scripts/gmail_to_ingest.py`. |
 | `ENABLE_AUTH` | No | `false` | Future: API auth. |
 | `WATCH_DIR` | No | `watch_pdfs/` | If unset or the path doesn’t exist, the ingest client uses **`watch_pdfs/`** at the repo root (created automatically). Drop PDFs there and they’ll be ingested. You can set `WATCH_DIR` to any other folder (e.g. your WeChat download folder). |
 | `POLL_SECONDS` | No | `5` | How often the ingest client scans the watch folder. |
