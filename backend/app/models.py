@@ -96,6 +96,11 @@ class Theme(Base):
     user_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Embedding of canonical_label for semantic similarity (theme deduplication).
     embedding: Mapped[Optional[List[float]]] = mapped_column(JSON, nullable=True)
+    # Optional parent theme for hierarchy (this theme is a sub-theme of parent).
+    parent_theme_id: Mapped[Optional[int]] = mapped_column(ForeignKey("themes.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    parent: Mapped[Optional["Theme"]] = relationship("Theme", remote_side="Theme.id", back_populates="children", foreign_keys=[parent_theme_id])
+    children: Mapped[list["Theme"]] = relationship("Theme", back_populates="parent", foreign_keys=[parent_theme_id])
 
     narratives: Mapped[list["Narrative"]] = relationship(back_populates="theme", cascade="all, delete-orphan")
     aliases: Mapped[list["ThemeAlias"]] = relationship(back_populates="theme", cascade="all, delete-orphan")

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { FollowThemeButtonWrapper } from "./FollowThemeButtonWrapper";
+import { GroupThemeIntoParent } from "./GroupThemeIntoParent";
 import { MarkThemeAsRead } from "./MarkThemeAsRead";
 import { ThemeChartAndDayDocs } from "./ThemeChartAndDayDocs";
 import { ThemeConfidenceChart } from "./ThemeConfidenceChart";
@@ -29,6 +30,8 @@ type Narrative = {
   narrative_stance?: string | null;
   confidence_level?: string | null;
   evidence: Evidence[];
+  /** Set when narrative is from a child theme (include_children=true). */
+  theme_label?: string | null;
 };
 
 type ThemeDetail = {
@@ -37,6 +40,9 @@ type ThemeDetail = {
   description?: string | null;
   last_updated?: string | null;
   narratives: Omit<Narrative, "evidence">[];
+  parent_theme_id?: number | null;
+  parent_theme_label?: string | null;
+  child_theme_ids?: number[];
 };
 
 type ThemeDailyMetric = {
@@ -124,9 +130,9 @@ async function getThemeDocuments(id: string): Promise<ThemeDocument[]> {
   return res.json();
 }
 
-/** All narratives for the theme, newest first (no date filter). */
+/** All narratives for the theme and its child themes, newest first (no date filter). */
 async function getThemeNarratives(id: string): Promise<Narrative[]> {
-  const res = await fetch(`${API_BASE}/themes/${id}/narratives`, { cache: "no-store" });
+  const res = await fetch(`${API_BASE}/themes/${id}/narratives?include_children=true`, { cache: "no-store" });
   if (!res.ok) return [];
   return res.json();
 }
@@ -274,6 +280,13 @@ export default async function ThemePage(
             <div className="flex flex-wrap items-center gap-2">
               <FollowThemeButtonWrapper themeId={theme.id} />
               <ThemeNotes themeId={id} />
+              <GroupThemeIntoParent
+                themeId={theme.id}
+                themeLabel={theme.canonical_label}
+                parentThemeId={theme.parent_theme_id ?? undefined}
+                parentThemeLabel={theme.parent_theme_label ?? undefined}
+                childThemeIds={theme.child_theme_ids ?? []}
+              />
             </div>
             <div className="flex items-center gap-2">
               <span>Range:</span>
@@ -356,7 +369,7 @@ export default async function ThemePage(
                 </p>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-                <TodaysNarratives narratives={narratives ?? []} themeId={id} />
+                <TodaysNarratives narratives={narratives ?? []} themeId={id} themeLabel={theme.canonical_label} />
               </div>
             </section>
           </div>

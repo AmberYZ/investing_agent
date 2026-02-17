@@ -23,6 +23,22 @@ from sqlalchemy.orm import Session, joinedload
 def _doc_timestamp():
     return func.coalesce(Document.modified_at, Document.received_at)
 
+
+def _theme_and_descendant_ids(db: Session, theme_id: int) -> list[int]:
+    """Return [theme_id] plus all descendant theme IDs (children, grandchildren, ...)."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if not theme:
+        return []
+    out = [theme_id]
+    stack = [theme_id]
+    while stack:
+        pid = stack.pop()
+        child_ids = [r[0] for r in db.query(Theme.id).filter(Theme.parent_theme_id == pid).all()]
+        for cid in child_ids:
+            out.append(cid)
+            stack.append(cid)
+    return out
+
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from app.aggregations import generate_theme_narrative_summaries, run_daily_aggregations
@@ -93,6 +109,7 @@ from app.schemas import (
     ThemeNotesUpdate,
     ThemeOut,
     ThemeWithNarrativesOut,
+    ThemeParentUpdate,
     SentimentRankingsOut,
     InflectionsOut,
     ThemeInstrumentOut,
@@ -508,6 +525,11 @@ def list_themes(
     else:
         q = q.order_by(func.max(Narrative.last_seen).desc().nullslast())
     rows = q.all()
+    parent_ids = {t.parent_theme_id for t, _ in rows if getattr(t, "parent_theme_id", None) is not None}
+    parent_label_by_id = {}
+    if parent_ids:
+        for p in db.query(Theme).filter(Theme.id.in_(parent_ids)).all():
+            parent_label_by_id[p.id] = p.canonical_label
     return [
         ThemeOut(
             id=t.id,
@@ -515,6 +537,8 @@ def list_themes(
             description=t.description,
             last_updated=last_updated,
             is_new=(t.created_at.date() >= cutoff_date) if t.created_at else False,
+            parent_theme_id=getattr(t, "parent_theme_id", None),
+            parent_theme_label=parent_label_by_id.get(t.parent_theme_id) if getattr(t, "parent_theme_id", None) else None,
         )
         for t, last_updated in rows
     ]
@@ -546,19 +570,20 @@ def list_followed_theme_ids():
 
 @app.get("/basket", response_model=list[BasketItemOut])
 def get_basket(db: Session = Depends(get_db)):
-    """List followed themes with minimal fields (id, label, description, instrument_count)."""
+    """List followed themes with minimal fields (id, label, description, instrument_count). instrument_count includes instruments from this theme and all descendant (child) themes."""
     ids = get_followed_theme_ids()
     if not ids:
         return []
     themes = db.query(Theme).filter(Theme.id.in_(ids)).all()
     theme_by_id = {t.id: t for t in themes}
-    instrument_counts = (
-        db.query(ThemeInstrument.theme_id, func.count(ThemeInstrument.id).label("n"))
-        .filter(ThemeInstrument.theme_id.in_(ids))
-        .group_by(ThemeInstrument.theme_id)
-        .all()
-    )
-    count_by_id = {r.theme_id: r.n for r in instrument_counts}
+    # Count instruments for each followed theme including all its descendants
+    count_by_id = {}
+    for tid in ids:
+        if tid not in theme_by_id:
+            continue
+        theme_ids = _theme_and_descendant_ids(db, tid)
+        n = db.query(func.count(ThemeInstrument.id)).filter(ThemeInstrument.theme_id.in_(theme_ids)).scalar() or 0
+        count_by_id[tid] = n
     # Preserve order of ids (newest first)
     return [
         BasketItemOut(
@@ -650,19 +675,19 @@ def get_basket_summary(
     db: Session = Depends(get_db),
     include_metrics: bool = Query(True, description="If false, return theme list only (fast); use /themes/{id}/basket-metrics to load metrics per theme."),
 ):
-    """List followed themes. With include_metrics=true (default) fetches valuation per theme (slow). Use include_metrics=false for fast load, then GET /themes/{id}/basket-metrics per theme."""
+    """List followed themes. With include_metrics=true (default) fetches valuation per theme (slow). Use include_metrics=false for fast load, then GET /themes/{id}/basket-metrics per theme. instrument_count includes child themes."""
     ids = get_followed_theme_ids()
     if not ids:
         return []
     themes = db.query(Theme).filter(Theme.id.in_(ids)).all()
     theme_by_id = {t.id: t for t in themes}
-    instrument_counts = (
-        db.query(ThemeInstrument.theme_id, func.count(ThemeInstrument.id).label("n"))
-        .filter(ThemeInstrument.theme_id.in_(ids))
-        .group_by(ThemeInstrument.theme_id)
-        .all()
-    )
-    count_by_id = {r.theme_id: r.n for r in instrument_counts}
+    count_by_id = {}
+    for tid in ids:
+        if tid not in theme_by_id:
+            continue
+        theme_ids = _theme_and_descendant_ids(db, tid)
+        n = db.query(func.count(ThemeInstrument.id)).filter(ThemeInstrument.theme_id.in_(theme_ids)).scalar() or 0
+        count_by_id[tid] = n
     primary_by_id: dict[int, str] = {}
     for tid, sym in (
         db.query(ThemeInstrument.theme_id, ThemeInstrument.symbol)
@@ -731,7 +756,7 @@ def get_basket_tickers(
         description="If false, return only theme + symbol (fast). Client can load metrics in parallel via /themes/{id}/instruments/summary.",
     ),
 ):
-    """Flat list of all tickers across followed themes with theme tag. Set include_metrics=true for server-side metrics (slow)."""
+    """Flat list of all tickers across followed themes (including child themes) with theme tag. Set include_metrics=true for server-side metrics (slow)."""
     ids = get_followed_theme_ids()
     if not ids:
         return []
@@ -741,16 +766,19 @@ def get_basket_tickers(
     result: list[BasketTickerRowOut] = []
     for theme_id in ordered_ids:
         theme = theme_by_id[theme_id]
+        descendant_ids = _theme_and_descendant_ids(db, theme_id)
+        desc_themes = db.query(Theme).filter(Theme.id.in_(descendant_ids)).all()
+        label_by_id = {t.id: t.canonical_label or "" for t in desc_themes}
         rows = (
             db.query(ThemeInstrument)
-            .filter(ThemeInstrument.theme_id == theme_id)
+            .filter(ThemeInstrument.theme_id.in_(descendant_ids))
             .order_by(ThemeInstrument.symbol)
             .all()
         )
         for r in rows:
             row = BasketTickerRowOut(
-                theme_id=theme_id,
-                canonical_label=theme.canonical_label or "",
+                theme_id=r.theme_id,
+                canonical_label=label_by_id.get(r.theme_id, ""),
                 id=r.id,
                 symbol=r.symbol,
                 display_name=r.display_name,
@@ -1137,6 +1165,45 @@ def patch_theme_notes(theme_id: int, body: ThemeNotesUpdate, db: Session = Depen
     return ThemeNotesOut(content=theme.user_notes)
 
 
+@app.patch("/themes/{theme_id}", response_model=ThemeOut)
+def patch_theme_parent(theme_id: int, body: ThemeParentUpdate, db: Session = Depends(get_db)):
+    """Set or clear this theme's parent (group into bigger theme). Prevents cycles."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    new_parent_id = body.parent_theme_id
+    if new_parent_id is not None:
+        if new_parent_id == theme_id:
+            raise HTTPException(status_code=400, detail="Theme cannot be its own parent")
+        descendant_ids = set(_theme_and_descendant_ids(db, theme_id))
+        if new_parent_id in descendant_ids:
+            raise HTTPException(status_code=400, detail="Cannot set a descendant theme as parent (would create a cycle)")
+        parent = db.query(Theme).filter(Theme.id == new_parent_id).one_or_none()
+        if parent is None:
+            raise HTTPException(status_code=404, detail="Parent theme not found")
+    theme.parent_theme_id = new_parent_id
+    db.commit()
+    db.refresh(theme)
+    parent = theme.parent
+    last_updated = (
+        db.query(func.max(Narrative.last_seen))
+        .filter(Narrative.theme_id == theme_id)
+        .scalar()
+    )
+    now = dt.datetime.now(dt.timezone.utc)
+    cutoff_date = (now - dt.timedelta(days=7)).date()
+    is_new = (theme.created_at.date() >= cutoff_date) if theme.created_at else False
+    return ThemeOut(
+        id=theme.id,
+        canonical_label=theme.canonical_label,
+        description=theme.description,
+        last_updated=last_updated,
+        is_new=is_new,
+        parent_theme_id=getattr(theme, "parent_theme_id", None),
+        parent_theme_label=parent.canonical_label if parent else None,
+    )
+
+
 @app.get("/themes/{theme_id}", response_model=ThemeWithNarrativesOut)
 def get_theme(theme_id: int, db: Session = Depends(get_db)):
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
@@ -1163,12 +1230,17 @@ def get_theme(theme_id: int, db: Session = Depends(get_db)):
     cutoff_date = (now - dt.timedelta(days=7)).date()
     last_updated = max((n.last_seen for n in narratives), default=None) if narratives else None
     is_new = (theme.created_at.date() >= cutoff_date) if theme.created_at else False
+    parent = theme.parent
+    child_ids = [c.id for c in theme.children]
     return ThemeWithNarrativesOut(
         id=theme.id,
         canonical_label=theme.canonical_label,
         description=theme.description,
         last_updated=last_updated,
         is_new=is_new,
+        parent_theme_id=getattr(theme, "parent_theme_id", None),
+        parent_theme_label=parent.canonical_label if parent else None,
+        child_theme_ids=child_ids,
         narratives=[
             NarrativeOut(
                 id=n.id,
@@ -1184,6 +1256,7 @@ def get_theme(theme_id: int, db: Session = Depends(get_db)):
                 narrative_stance=n.narrative_stance,
                 confidence_level=n.confidence_level,
                 evidence=[],
+                theme_label=theme.canonical_label,
             )
             for n in narratives
         ],
@@ -1666,14 +1739,20 @@ def list_theme_instruments(theme_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/themes/{theme_id}/instruments/summary", response_model=list[InstrumentSummaryOut])
-def list_theme_instruments_summary(theme_id: int, db: Session = Depends(get_db)):
-    """List instruments for this theme with price and valuation metrics (for basket ticker rows)."""
+def list_theme_instruments_summary(
+    theme_id: int,
+    include_children: bool = Query(False, description="If true, include instruments from all descendant (child) themes"),
+    db: Session = Depends(get_db),
+):
+    """List instruments for this theme with price and valuation metrics (for basket ticker rows). With include_children=true returns tickers from this theme and all child themes."""
     from app.market_data import get_prices_and_valuation, compute_period_returns, get_earnings_estimates, get_eps_growth
 
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
-    rows = db.query(ThemeInstrument).filter(ThemeInstrument.theme_id == theme_id).order_by(ThemeInstrument.symbol).all()
+    theme_ids = _theme_and_descendant_ids(db, theme_id) if include_children else [theme_id]
+    rows = db.query(ThemeInstrument).filter(ThemeInstrument.theme_id.in_(theme_ids)).order_by(ThemeInstrument.symbol).all()
+    theme_label_by_id = {t.id: t.canonical_label for t in db.query(Theme).filter(Theme.id.in_(theme_ids)).all()}
     result: list[InstrumentSummaryOut] = []
     for r in rows:
         row = InstrumentSummaryOut(
@@ -1682,6 +1761,8 @@ def list_theme_instruments_summary(theme_id: int, db: Session = Depends(get_db))
             display_name=r.display_name,
             type=r.type or "stock",
             source=r.source or "manual",
+            theme_id=r.theme_id if include_children else None,
+            theme_label=theme_label_by_id.get(r.theme_id) if include_children else None,
         )
         try:
             data = get_prices_and_valuation(r.symbol, months=6)
@@ -2042,14 +2123,16 @@ def get_theme_narratives(
     since: Optional[str] = Query(None, description="ISO date (YYYY-MM-DD) to list narratives with evidence on or after this date"),
     limit: Optional[int] = Query(None, ge=1, le=500, description="Max number of narratives to return (newest first)"),
     on_latest_date: bool = Query(False, description="If true, return all narratives with evidence on the theme's most recent activity date (no limit)"),
+    include_children: bool = Query(False, description="If true, include narratives from all descendant (child) themes"),
     db: Session = Depends(get_db),
 ):
-    """List narratives for this theme. With date=today or since=... returns only narratives with evidence on that day(s), newest first, with evidence. With on_latest_date=true returns all narratives on the most recent date."""
+    """List narratives for this theme. With include_children=true (e.g. for My Basket) returns narratives from this theme and all its child themes."""
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
     doc_date = func.date(_doc_timestamp())
-    theme_narrative_ids = [r[0] for r in db.query(Narrative.id).filter(Narrative.theme_id == theme_id).all()]
+    theme_ids = _theme_and_descendant_ids(db, theme_id) if include_children else [theme_id]
+    theme_narrative_ids = [r[0] for r in db.query(Narrative.id).filter(Narrative.theme_id.in_(theme_ids)).all()]
     if on_latest_date:
         # Find the most recent document date for this theme, then all narratives with evidence on that date
         max_date_row = (
@@ -2121,6 +2204,11 @@ def get_theme_narratives(
         .all()
     )
     date_created_by_nid = {r.narrative_id: r.earliest for r in earliest_doc}
+    theme_label_by_id = {}
+    if include_children and narratives:
+        tid_set = {n.theme_id for n in narratives}
+        for t in db.query(Theme).filter(Theme.id.in_(tid_set)).all():
+            theme_label_by_id[t.id] = t.canonical_label
     result = []
     for n in narratives:
         evs = (
@@ -2155,6 +2243,7 @@ def get_theme_narratives(
                     )
                     for e in evs
                 ],
+                theme_label=theme_label_by_id.get(n.theme_id) if include_children else None,
             )
         )
     return result

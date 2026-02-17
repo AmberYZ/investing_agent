@@ -25,6 +25,8 @@ type Narrative = {
   narrative_stance?: string | null;
   confidence_level?: string | null;
   evidence: Evidence[];
+  /** When from a child theme (include_children), label of that theme. */
+  theme_label?: string | null;
 };
 
 type ThemeOption = { id: number; canonical_label: string };
@@ -43,9 +45,12 @@ function narrativeSourceLabel(evidence: Evidence[]): string {
 export function TodaysNarratives({
   narratives,
   themeId,
+  themeLabel,
 }: {
   narratives: Narrative[];
   themeId: string;
+  /** Current page theme label; used to show child-theme tag when narrative is from a sub-theme. */
+  themeLabel?: string;
 }) {
   if (narratives.length === 0) {
     return (
@@ -58,7 +63,7 @@ export function TodaysNarratives({
   return (
     <div className="space-y-3">
       {narratives.map((n) => (
-        <NarrativeCard key={n.id} narrative={n} themeId={themeId} />
+        <NarrativeCard key={n.id} narrative={n} themeId={themeId} themeLabel={themeLabel} />
       ))}
     </div>
   );
@@ -67,9 +72,11 @@ export function TodaysNarratives({
 function NarrativeCard({
   narrative: n,
   themeId,
+  themeLabel,
 }: {
   narrative: Narrative;
   themeId: string;
+  themeLabel?: string;
 }) {
   const router = useRouter();
   const [showAllQuotes, setShowAllQuotes] = useState(false);
@@ -88,6 +95,9 @@ function NarrativeCard({
   const INITIAL_QUOTES = 3;
   const visibleQuotes = showAllQuotes ? evidence : evidence.slice(0, INITIAL_QUOTES);
   const hasMoreQuotes = evidence.length > INITIAL_QUOTES && !showAllQuotes;
+  const isFromChildTheme =
+    n.theme_label && themeLabel && n.theme_label !== themeLabel;
+  const childThemeTagLabel = isFromChildTheme ? n.theme_label : null;
 
   const openReassign = useCallback(() => {
     setReassignOpen(true);
@@ -131,7 +141,18 @@ function NarrativeCard({
     <div className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{n.statement}</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{n.statement}</div>
+            {childThemeTagLabel && (
+              <Link
+                href={`/themes/${n.theme_id}`}
+                className="shrink-0 rounded bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-800 hover:bg-violet-200 dark:bg-violet-900/50 dark:text-violet-200 dark:hover:bg-violet-900/70"
+                title={`From child theme: ${childThemeTagLabel}`}
+              >
+                {childThemeTagLabel}
+              </Link>
+            )}
+          </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {(n.date_created || n.first_seen) && (
               <span className="text-[11px] text-zinc-500 dark:text-zinc-400">

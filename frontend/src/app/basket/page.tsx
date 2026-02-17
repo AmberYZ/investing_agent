@@ -168,7 +168,7 @@ function ThemeSection({
 
   useEffect(() => {
     setNarrativesLoading(true);
-    fetch(`${API_BASE}/themes/${item.id}/narratives?${NARRATIVES_QUERY}`, { cache: "no-store" })
+    fetch(`${API_BASE}/themes/${item.id}/narratives?${NARRATIVES_QUERY}&include_children=true`, { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : []))
       .then((data: NarrativeItem[]) => {
         setNarratives(Array.isArray(data) ? data : []);
@@ -180,7 +180,7 @@ function ThemeSection({
   const fetchTickers = useCallback(() => {
     if (!expanded) return;
     setTickersLoading(true);
-    fetch(`${API_BASE}/themes/${item.id}/instruments/summary`, { cache: "no-store" })
+    fetch(`${API_BASE}/themes/${item.id}/instruments/summary?include_children=true`, { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : []))
       .then((data: InstrumentSummary[]) => {
         setTickers(Array.isArray(data) ? data : []);
@@ -203,7 +203,7 @@ function ThemeSection({
   const refreshTickersWithBlink = useCallback(() => {
     if (!expanded || tickers.length === 0) return;
     const prevCloses = Object.fromEntries(tickers.map((t) => [t.symbol, t.last_close]));
-    fetch(`${API_BASE}/themes/${item.id}/instruments/summary`, { cache: "no-store" })
+    fetch(`${API_BASE}/themes/${item.id}/instruments/summary?include_children=true`, { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : []))
       .then((data: InstrumentSummary[]) => {
         const next = Array.isArray(data) ? data : [];

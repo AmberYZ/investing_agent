@@ -85,6 +85,8 @@ class NarrativeOut(BaseModel):
     narrative_stance: Optional[str] = None  # bullish|bearish|mixed|neutral from LLM
     confidence_level: Optional[str] = None  # fact|opinion from LLM
     evidence: list[EvidenceOut] = Field(default_factory=list)
+    # When include_children=true on narratives endpoint, label of the theme this narrative belongs to (may be a child).
+    theme_label: Optional[str] = None
 
 
 class ThemeOut(BaseModel):
@@ -93,6 +95,8 @@ class ThemeOut(BaseModel):
     description: Optional[str] = None
     last_updated: Optional[dt.datetime] = None
     is_new: bool = False
+    parent_theme_id: Optional[int] = None
+    parent_theme_label: Optional[str] = None
 
 
 class ThemeIdLabelOut(BaseModel):
@@ -165,6 +169,13 @@ class AdminThemeOut(BaseModel):
 
 class ThemeWithNarrativesOut(ThemeOut):
     narratives: list[NarrativeOut] = Field(default_factory=list)
+    # IDs of direct child themes (for hierarchy UI).
+    child_theme_ids: list[int] = Field(default_factory=list)
+
+
+class ThemeParentUpdate(BaseModel):
+    """Set or clear this theme's parent (group into bigger theme)."""
+    parent_theme_id: Optional[int] = None  # null = ungroup
 
 
 class ThemeDailyMetricOut(BaseModel):
@@ -483,6 +494,9 @@ class InstrumentSummaryOut(BaseModel):
     display_name: Optional[str] = None
     type: str = "stock"
     source: str = "manual"
+    # When include_children=true, the theme this instrument belongs to (may be a child).
+    theme_id: Optional[int] = None
+    theme_label: Optional[str] = None
     last_close: Optional[float] = None
     pct_1m: Optional[float] = None
     pct_3m: Optional[float] = None
