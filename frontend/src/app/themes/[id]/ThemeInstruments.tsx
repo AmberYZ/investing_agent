@@ -176,6 +176,7 @@ export function ThemeInstruments({
   const [histPe, setHistPe] = useState<HistoricalPEResponse | null>(null);
   const [histPeLoading, setHistPeLoading] = useState(false);
   const [narrativeOverlay, setNarrativeOverlay] = useState(false);
+  const [narrativeConfidenceFilter, setNarrativeConfidenceFilter] = useState<"all" | "fact" | "opinion">("all");
   const [stanceData, setStanceData] = useState<ThemeMetricsByStance[]>([]);
 
   const quoteCache = useRef<Map<string, { data: InstrumentQuote; fetchedAt: number }>>(new Map());
@@ -263,10 +264,14 @@ export function ThemeInstruments({
   );
 
   const loadStance = useCallback(async () => {
-    const res = await fetch(`${API_BASE}/themes/${themeId}/metrics-by-stance?months=${months}`);
+    const params = new URLSearchParams({ months: String(months) });
+    if (narrativeConfidenceFilter !== "all") {
+      params.set("confidence", narrativeConfidenceFilter);
+    }
+    const res = await fetch(`${API_BASE}/themes/${themeId}/metrics-by-stance?${params.toString()}`);
     if (!res.ok) return [];
     return res.json();
-  }, [themeId, months]);
+  }, [themeId, months, narrativeConfidenceFilter]);
 
   useEffect(() => {
     if (viewMode !== "single" || !selectedSymbol) return;
@@ -656,10 +661,27 @@ export function ThemeInstruments({
                   )}
                 </div>
                 {quote?.message && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{quote.message}</p>}
-                <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
-                  <input type="checkbox" checked={narrativeOverlay} onChange={(e) => setNarrativeOverlay(e.target.checked)} className="rounded border-zinc-300" />
-                  Overlay narratives (theme stance by date)
-                </label>
+                <div className="mt-2 flex flex-wrap items-center gap-3">
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
+                    <input type="checkbox" checked={narrativeOverlay} onChange={(e) => setNarrativeOverlay(e.target.checked)} className="rounded border-zinc-300" />
+                    Overlay narratives (theme stance by date)
+                  </label>
+                  {narrativeOverlay && (
+                    <span className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
+                      <span className="font-medium">Confidence:</span>
+                      {(["all", "fact", "opinion"] as const).map((opt) => (
+                        <button
+                          key={opt}
+                          type="button"
+                          onClick={() => setNarrativeConfidenceFilter(opt)}
+                          className={`rounded px-2 py-0.5 text-xs font-medium ${narrativeConfidenceFilter === opt ? "bg-zinc-200 dark:bg-zinc-700 text-zinc-900 dark:text-zinc-100" : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/80 dark:hover:bg-zinc-700/80"}`}
+                        >
+                          {opt === "all" ? "All" : opt === "fact" ? "Fact only" : "Opinion only"}
+                        </button>
+                      ))}
+                    </span>
+                  )}
+                </div>
 
                 {quoteLoading ? (
                   <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">Loading chart…</p>

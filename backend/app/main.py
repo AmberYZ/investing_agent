@@ -1732,15 +1732,16 @@ def get_instrument_historical_pe(
 def get_theme_metrics_by_stance(
     theme_id: int,
     months: int = Query(6, ge=1, le=12),
+    confidence: Optional[str] = Query(None, description="Filter by narrative confidence: 'fact', 'opinion', or omit for all"),
     db: Session = Depends(get_db),
 ):
-    """Time-series of narrative mention counts by narrative_stance (bullish/bearish/mixed/neutral) for this theme."""
+    """Time-series of narrative mention counts by narrative_stance (bullish/bearish/mixed/neutral) for this theme. Optional confidence filter: fact | opinion."""
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
     since = dt.date.today() - dt.timedelta(days=months * 31)
     doc_date = func.date(_doc_timestamp())
-    rows = (
+    q = (
         db.query(
             doc_date.label("date"),
             Narrative.narrative_stance,
@@ -1750,9 +1751,10 @@ def get_theme_metrics_by_stance(
         .join(Narrative, Narrative.id == Evidence.narrative_id)
         .join(Document, Document.id == Evidence.document_id)
         .filter(Narrative.theme_id == theme_id, doc_date >= since)
-        .group_by(doc_date, Narrative.narrative_stance)
-        .all()
     )
+    if confidence and confidence.lower() in ("fact", "opinion"):
+        q = q.filter(func.lower(func.coalesce(Narrative.confidence_level, "opinion")) == confidence.lower())
+    rows = q.group_by(doc_date, Narrative.narrative_stance).all()
     by_date: dict[str, dict[str, int]] = {}
     for r in rows:
         d = r.date.isoformat()[:10] if hasattr(r.date, "isoformat") else str(r.date)[:10]
