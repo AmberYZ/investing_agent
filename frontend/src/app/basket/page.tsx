@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { FollowThemeButton } from "../components/FollowThemeButton";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -178,12 +179,22 @@ function ThemeSection({
       <div className="p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <Link
-              href={`/themes/${item.id}`}
-              className="font-semibold text-zinc-900 hover:underline dark:text-zinc-100"
-            >
-              {item.canonical_label}
-            </Link>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                href={`/themes/${item.id}`}
+                className="font-semibold text-zinc-900 hover:underline dark:text-zinc-100"
+              >
+                {item.canonical_label}
+              </Link>
+              <FollowThemeButton
+                themeId={item.id}
+                followed
+                onToggle={(_, followed) => {
+                  if (!followed) onUnfollowRefetch?.();
+                }}
+                variant="compact"
+              />
+            </div>
             {item.description && (
               <p className="mt-0.5 line-clamp-2 text-xs text-zinc-500 dark:text-zinc-400">
                 {item.description}

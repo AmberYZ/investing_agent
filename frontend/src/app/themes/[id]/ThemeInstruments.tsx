@@ -134,7 +134,14 @@ function buildBasketSeries(
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export function ThemeInstruments({ themeId }: { themeId: string }) {
+export function ThemeInstruments({
+  themeId,
+  compactLayout,
+}: {
+  themeId: string;
+  /** When true, omit top margin for use in grid layout */
+  compactLayout?: boolean;
+}) {
   const [instruments, setInstruments] = useState<ThemeInstrument[]>([]);
   const [loading, setLoading] = useState(true);
   const [addSymbol, setAddSymbol] = useState("");
@@ -356,7 +363,9 @@ export function ThemeInstruments({ themeId }: { themeId: string }) {
   const hasInstruments = instruments.length > 0 || suggestions.length > 0 || fromDocSuggestions.length > 0;
 
   return (
-    <section className="mt-8 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+    <section
+      className={`rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950 ${compactLayout ? "" : "mt-8"}`}
+    >
       <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">Related stocks & ETFs</h2>
       <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
         Add tickers, then view a single symbol or the basket (simple average of normalized prices). Data is cached to limit API calls.

@@ -115,11 +115,14 @@ export function ThemeChartAndDayDocs({
   metricsBySubTheme = [],
   documents,
   themeId,
+  compactLayout,
 }: {
   metrics: ThemeDailyMetric[];
   metricsBySubTheme?: ThemeSubThemeDaily[];
   documents: ThemeDocument[];
   themeId: string;
+  /** When true, omit top margin for use in grid layout */
+  compactLayout?: boolean;
 }) {
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [stackedBySubTheme, setStackedBySubTheme] = useState(true);
@@ -154,13 +157,13 @@ export function ThemeChartAndDayDocs({
       : { data: [], keys: [] as string[], colorMap: {} as Record<string, string> };
 
   return (
-    <section className="mt-8 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+    <section className={`rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950 ${compactLayout ? "" : "mt-8"}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
+        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
           Share of voice over time
         </h2>
         {metricsBySubTheme.length > 0 && (
-          <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
+          <label className="flex cursor-pointer items-center gap-2 text-[11px] text-zinc-600 dark:text-zinc-400">
             <input
               type="checkbox"
               checked={stackedBySubTheme}
@@ -171,14 +174,14 @@ export function ThemeChartAndDayDocs({
           </label>
         )}
       </div>
-      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-        This theme&apos;s share of document mentions over time. Click a day to see documents for that date.
-        {metricsBySubTheme.length > 0 && " Toggle “Stack by sub-theme” to see breakdown by sub-theme."}
+      <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+        Share of mentions. Click a day for documents.
+        {metricsBySubTheme.length > 0 && " Toggle “Stack by sub-theme” for breakdown."}
       </p>
-      <div className="mt-4">
+      <div className="mt-3">
         {stackedBySubTheme && stackedData.length > 0 ? (
           <>
-            <div className="h-64 w-full">
+            <div className="h-52 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
                   data={stackedData}
