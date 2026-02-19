@@ -55,7 +55,7 @@ Narrative
   - Bad: theme "Stablecoins", sub_theme "Regulation", narrative "The GENIUS Act is likely to establish stablecoins as…" (too generic — the specific legislation matters for tracking).
 - For each narrative you must provide:
   - narrative_stance: "bullish" | "bearish" | "mixed" | "neutral" (so contradictions under the same theme/sub-theme are explicit).
-  - confidence_level: "fact" | "opinion" (fact = based on reported data; opinion = based on analyst view or sentiment; ratings of outperform/underperform by analysts are opinions).
+  - confidence_level: "fact" | "opinion" (fact = based on reported data; opinion = based on analyst view, sentiment, or price movements; ratings of outperform/underperform by analysts and price rising/falling are opinions).
 
 Output valid JSON only per the schema below. No markdown. The schema allows multiple items in "evidence" per narrative—use that to include several quotes per narrative.
 
