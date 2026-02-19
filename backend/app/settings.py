@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     # Max output tokens for theme/narrative extraction. Default 16384 allows many themes, narratives, and quotes.
     # If you see truncated or limited extractions, increase (e.g. 32768). Some models cap at 8k–32k.
     llm_extraction_max_tokens: int = 16384
+    # Max document characters sent to the LLM for theme extraction. Long reports (e.g. "Big Debates" with 24 sections)
+    # need a higher limit so all sections are seen; default 300000 allows ~100+ page PDFs. Lower to save tokens/cost.
+    llm_extraction_max_chars: int = 300000
     # Force heuristic extraction (no LLM/Vertex). When true, ignores LLM_API_KEY and Vertex.
     use_heuristic_extraction: bool = False
 

@@ -122,7 +122,7 @@ def _extract_themes_vertex_impl(text: str) -> ExtractedDoc:
         f"{json.dumps(schema)}\n"
         "\n"
         "DOCUMENT TEXT:\n"
-        f"{text[:120000]}\n"
+        f"{text[:getattr(settings, 'llm_extraction_max_chars', 120_000)]}\n"
     )
 
     max_out = settings.llm_extraction_max_tokens

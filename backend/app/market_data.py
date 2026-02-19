@@ -41,7 +41,7 @@ TRADING_DAYS_PER_MONTH = 21
 
 # Technical indicator periods
 SMA_PERIOD = 20
-RSI_PERIOD = 14
+RSI_PERIOD = 20
 MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
@@ -390,7 +390,7 @@ def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
                     return None
                 out["trailing_pe"] = _safe_float("PERatio", "PE Ratio", "TrailingPE")
                 out["forward_pe"] = _safe_float("ForwardPE", "Forward PE", "Forward P/E")
-                out["peg_ratio"] = _safe_float("PEGRatio", "PEG Ratio")
+                out["peg_ratio"] = _safe_float("PEGRatio", "PEG Ratio", "PEG")
                 out["ev_to_ebitda"] = _safe_float("EVToEBITDA", "EV/EBITDA")
                 # Earnings/revenue growth: API returns decimal (e.g. 0.9 = 90%). Store as percentage.
                 qeg = _safe_float("QuarterlyEarningsGrowthYOY")

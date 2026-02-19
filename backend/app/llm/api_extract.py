@@ -14,6 +14,12 @@ from app.llm.provider import chat_completion
 from app.settings import settings
 
 logger = logging.getLogger("investing_agent.llm.api_extract")
+
+
+def _max_doc_chars() -> int:
+    return getattr(settings, "llm_extraction_max_chars", 120_000) or 120_000
+
+
 from app.llm.vertex import (
     ExtractedDoc,
     ExtractedEvidence,
@@ -82,7 +88,6 @@ _DEFAULT_SYSTEM = (
 _PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
 _USER_PROMPT_FILE = _PROMPT_DIR / "extract_themes.txt"
 _DEFAULT_PROMPT_FILE = _PROMPT_DIR / "extract_themes_default.txt"
-_MAX_DOC_CHARS = 120_000
 
 
 def get_extraction_prompt_template() -> str:
@@ -108,15 +113,16 @@ def extract_themes_and_narratives(
     """Call configured LLM with editable prompt and return structured extraction.
     Pass model_override to use a different model for this call only (e.g. dry-run comparison)."""
     effective_model = (model_override or settings.llm_model or "gpt-4o-mini").strip()
+    max_chars = _max_doc_chars()
     logger.info(
         "Calling LLM provider=%s model=%s input_len=%d max_output_tokens=%d",
-        settings.llm_provider, effective_model, min(len(text), _MAX_DOC_CHARS),
+        settings.llm_provider, effective_model, min(len(text), max_chars),
         settings.llm_extraction_max_tokens,
     )
     template = get_extraction_prompt_template()
     user_prompt = (
         template.replace("{{schema}}", json.dumps(EXTRACTION_SCHEMA))
-        .replace("{{text}}", text[: _MAX_DOC_CHARS])
+        .replace("{{text}}", text[:max_chars])
     )
     raw = chat_completion(
         system=_DEFAULT_SYSTEM,

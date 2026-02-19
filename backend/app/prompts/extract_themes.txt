@@ -4,6 +4,7 @@ Coverage and richness (important)
 - For long or detailed documents, extract full breadth: multiple sub-themes and multiple narratives so that the output reflects the document's content. Do not collapse or over-summarize.
 - Each distinct claim or angle that affects investment decisions should appear as its own narrative with supporting evidence. 
 - Use multiple themes when the document discusses several distinct investable topics or theses. When the document presents one thesis or theme with multiple entities as examples or picks (e.g. "AI risk-proof long ideas" with eight stocks), use one theme for the thesis and treat entities as sub-themes or narrative context—do not force one theme per entity in that case.
+- Documents that list multiple distinct debates, key questions, or sector sections (e.g. "Big Debates", "Key Investor Debates", "Outlook by sector"): treat each major debate or section as its own theme so that all are represented. Do not collapse the whole document into a single theme; extract one theme per debate/section (e.g. "Freight / AI in transports", "Gaming & Lodging / Agentic AI", "Critical minerals", "Airlines / LCC model") so the full breadth is captured.
 
 Summary
 - Write a concise 2-4 sentence summary of the document's key investment takeaways. Focus on the most important findings, data points, or conclusions an investor should know. This summary is displayed as "Key Takeaways" on the document page, so make it punchy and actionable. Always provide a non-empty summary string.

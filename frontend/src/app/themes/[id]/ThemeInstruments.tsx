@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Line,
   ReferenceLine,
@@ -15,7 +15,8 @@ import {
 } from "recharts";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
-const PRICE_CACHE_TTL_MS = 14 * 60 * 1000; // 14 min (backend caches 15 min)
+const PRICE_CACHE_TTL_MS = 14 * 60 * 1000; // 14 min; match backend cache so refresh doesn't refetch
+const QUOTE_STORAGE_KEY = "investing_quote";
 
 type ThemeInstrument = {
   id: number;
@@ -68,6 +69,33 @@ type InstrumentQuote = {
   eps_growth_pct?: number | null;
   message?: string | null;
 };
+
+/** Read quote from sessionStorage if present and not expired. Survives page refresh. */
+function getQuoteFromSessionStorage(cacheKey: string): InstrumentQuote | null {
+  if (typeof window === "undefined" || !window.sessionStorage) return null;
+  try {
+    const raw = window.sessionStorage.getItem(`${QUOTE_STORAGE_KEY}:${cacheKey}`);
+    if (!raw) return null;
+    const { data, fetchedAt } = JSON.parse(raw) as { data: InstrumentQuote; fetchedAt: number };
+    if (!data?.prices || Date.now() - fetchedAt >= PRICE_CACHE_TTL_MS) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+/** Write quote to sessionStorage so refresh can use it without refetch. */
+function setQuoteInSessionStorage(cacheKey: string, data: InstrumentQuote): void {
+  if (typeof window === "undefined" || !window.sessionStorage) return;
+  try {
+    window.sessionStorage.setItem(
+      `${QUOTE_STORAGE_KEY}:${cacheKey}`,
+      JSON.stringify({ data, fetchedAt: Date.now() })
+    );
+  } catch {
+    // ignore quota or parse errors
+  }
+}
 
 type HistoricalPESeries = {
   date: string;
@@ -178,6 +206,10 @@ export function ThemeInstruments({
   const [narrativeOverlay, setNarrativeOverlay] = useState(false);
   const [narrativeConfidenceFilter, setNarrativeConfidenceFilter] = useState<"all" | "fact" | "opinion">("all");
   const [stanceData, setStanceData] = useState<ThemeMetricsByStance[]>([]);
+  const [overlaySpy, setOverlaySpy] = useState(false);
+  const [spyQuote, setSpyQuote] = useState<InstrumentQuote | null>(null);
+  const [spyQuoteLoading, setSpyQuoteLoading] = useState(false);
+  const [overlayRsi, setOverlayRsi] = useState(true);
 
   const quoteCache = useRef<Map<string, { data: InstrumentQuote; fetchedAt: number }>>(new Map());
 
@@ -254,10 +286,17 @@ export function ThemeInstruments({
       if (useCache && cached && Date.now() - cached.fetchedAt < PRICE_CACHE_TTL_MS) {
         return cached.data;
       }
+      const fromStorage = getQuoteFromSessionStorage(cacheKey);
+      if (useCache && fromStorage) {
+        quoteCache.current.set(cacheKey, { data: fromStorage, fetchedAt: Date.now() });
+        return fromStorage;
+      }
       const res = await fetch(`${API_BASE}/instruments/${encodeURIComponent(symbol)}/prices?months=${months}`);
       if (!res.ok) return null;
       const data = await res.json();
-      quoteCache.current.set(cacheKey, { data, fetchedAt: Date.now() });
+      const fetchedAt = Date.now();
+      quoteCache.current.set(cacheKey, { data, fetchedAt });
+      setQuoteInSessionStorage(cacheKey, data);
       return data;
     },
     [months]
@@ -275,6 +314,15 @@ export function ThemeInstruments({
 
   useEffect(() => {
     if (viewMode !== "single" || !selectedSymbol) return;
+    const cacheKey = `${selectedSymbol}-${months}`;
+    const fromStorage = getQuoteFromSessionStorage(cacheKey);
+    if (fromStorage) {
+      quoteCache.current.set(cacheKey, { data: fromStorage, fetchedAt: Date.now() });
+      setQuote(fromStorage);
+      setQuoteLoading(false);
+      loadStance().then((stance) => setStanceData(Array.isArray(stance) ? stance : []));
+      return;
+    }
     setQuoteLoading(true);
     setQuote(null);
     setHistPe(null);
@@ -283,7 +331,7 @@ export function ThemeInstruments({
       setStanceData(Array.isArray(stance) ? stance : []);
       setQuoteLoading(false);
     });
-  }, [viewMode, selectedSymbol, loadQuote, loadStance]);
+  }, [viewMode, selectedSymbol, loadQuote, loadStance, months]);
 
   useEffect(() => {
     if (viewMode !== "single" || !selectedSymbol) {
@@ -299,6 +347,21 @@ export function ThemeInstruments({
       })
       .finally(() => setHistPeLoading(false));
   }, [viewMode, selectedSymbol, months]);
+
+  // Fetch SPY prices when overlay is enabled (same Alpha Vantage endpoint, ticker SPY)
+  useEffect(() => {
+    if (!overlaySpy || viewMode !== "single") {
+      setSpyQuote(null);
+      return;
+    }
+    setSpyQuoteLoading(true);
+    setSpyQuote(null);
+    loadQuote("SPY")
+      .then((q) => {
+        setSpyQuote(q ?? null);
+      })
+      .finally(() => setSpyQuoteLoading(false));
+  }, [overlaySpy, viewMode, loadQuote]);
 
   const handleTickerClick = (symbol: string) => {
     setViewMode("single");
@@ -429,6 +492,60 @@ export function ThemeInstruments({
     : [];
 
   const chartData = quote?.prices ?? [];
+
+  // When overlay SPY: merged data with % return from first common date (0% = start)
+  type ChartPointWithSpy = PricePoint & { closePctReturn?: number; spyPctReturn?: number; spyClose?: number };
+  const chartDataWithSpy = useMemo((): ChartPointWithSpy[] => {
+    if (!overlaySpy || chartData.length === 0 || !spyQuote?.prices?.length) return chartData as ChartPointWithSpy[];
+    const spyByDate = new Map<string, number>();
+    const spyDatesSorted: string[] = [];
+    for (const p of spyQuote.prices) {
+      const d = (p.date && String(p.date)).slice(0, 10);
+      spyByDate.set(d, p.close);
+      spyDatesSorted.push(d);
+    }
+    spyDatesSorted.sort();
+    const firstChartDate = (chartData[0].date && String(chartData[0].date)).slice(0, 10);
+    // Forward-fill: use first SPY date on or after first chart date so we have a value for the start
+    let lastSpyClose: number | null = null;
+    const firstSpyDateOnOrAfter = spyDatesSorted.find((sd) => sd >= firstChartDate);
+    if (firstSpyDateOnOrAfter != null) lastSpyClose = spyByDate.get(firstSpyDateOnOrAfter) ?? null;
+    if (lastSpyClose == null && spyDatesSorted.length > 0)
+      lastSpyClose = spyByDate.get(spyDatesSorted[spyDatesSorted.length - 1]) ?? null;
+
+    const merged: ChartPointWithSpy[] = [];
+    let baseClose: number | null = null;
+    let baseSpy: number | null = null;
+    for (const p of chartData) {
+      const d = (p.date && String(p.date)).slice(0, 10);
+      const spyClose = spyByDate.get(d) ?? lastSpyClose;
+      if (spyClose != null) lastSpyClose = spyClose;
+      if (baseClose == null && spyClose != null) {
+        baseClose = p.close;
+        baseSpy = spyClose;
+      }
+      const closePctReturn = baseClose != null ? (p.close / baseClose - 1) * 100 : undefined;
+      const spyPctReturn = baseSpy != null && spyClose != null ? (spyClose / baseSpy - 1) * 100 : undefined;
+      merged.push({ ...p, closePctReturn, spyPctReturn, spyClose: spyClose ?? undefined });
+    }
+    return merged;
+  }, [overlaySpy, chartData, spyQuote?.prices]);
+
+  const hasOverlayData = overlaySpy && spyQuote?.prices?.length && (chartDataWithSpy as ChartPointWithSpy[]).some((p) => p.closePctReturn != null);
+
+  // When SPY overlay is on and we have % return data, Y domain from those series only
+  const priceChartYDomain = useMemo((): [number, number] | "auto" => {
+    if (!hasOverlayData || chartDataWithSpy.length === 0) return "auto";
+    let min = Infinity;
+    let max = -Infinity;
+    for (const p of chartDataWithSpy as ChartPointWithSpy[]) {
+      if (p.closePctReturn != null) { min = Math.min(min, p.closePctReturn); max = Math.max(max, p.closePctReturn); }
+      if (p.spyPctReturn != null) { min = Math.min(min, p.spyPctReturn); max = Math.max(max, p.spyPctReturn); }
+    }
+    if (min === Infinity || max === -Infinity) return "auto";
+    const pad = Math.max((max - min) * 0.05, 0.5);
+    return [Math.floor(min - pad), Math.ceil(max + pad)];
+  }, [hasOverlayData, chartDataWithSpy]);
 
   const basketQuotes = useRef<Map<string, InstrumentQuote>>(new Map());
   const [basketLoading, setBasketLoading] = useState(false);
@@ -649,7 +766,7 @@ export function ThemeInstruments({
                     <div className="flex flex-wrap gap-4 text-xs text-zinc-600 dark:text-zinc-400">
                       {quote.trailing_pe != null && <span>Trailing P/E: <strong>{quote.trailing_pe}</strong></span>}
                       {quote.forward_pe != null && <span>Forward P/E: <strong>{quote.forward_pe}</strong></span>}
-                      {quote.peg_ratio != null && <span>PEG: <strong>{quote.peg_ratio}</strong></span>}
+                      <span>PEG: <strong>{quote.peg_ratio != null ? quote.peg_ratio : "—"}</strong></span>
                       {quote.ev_to_ebitda != null && <span>EV/EBITDA: <strong>{quote.ev_to_ebitda}</strong></span>}
                       {quote.eps_growth_pct != null && <span>EPS growth (Fwd vs Trail 12M): <strong>{quote.eps_growth_pct}%</strong></span>}
                       {quote.next_fy_eps_estimate != null && <span>Next FY EPS: <strong>{quote.next_fy_eps_estimate}</strong></span>}
@@ -662,6 +779,15 @@ export function ThemeInstruments({
                 </div>
                 {quote?.message && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{quote.message}</p>}
                 <div className="mt-2 flex flex-wrap items-center gap-3">
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
+                    <input type="checkbox" checked={overlayRsi} onChange={(e) => setOverlayRsi(e.target.checked)} className="rounded border-zinc-300" />
+                    Overlay RSI (right axis)
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
+                    <input type="checkbox" checked={overlaySpy} onChange={(e) => setOverlaySpy(e.target.checked)} className="rounded border-zinc-300" />
+                    Overlay SPY (S&P 500)
+                  </label>
+                  {overlaySpy && spyQuoteLoading && <span className="text-xs text-zinc-500 dark:text-zinc-400">Loading SPY…</span>}
                   <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
                     <input type="checkbox" checked={narrativeOverlay} onChange={(e) => setNarrativeOverlay(e.target.checked)} className="rounded border-zinc-300" />
                     Overlay narratives (theme stance by date)
@@ -689,35 +815,83 @@ export function ThemeInstruments({
                   <>
                     <div className="mt-3 h-52 w-full">
                       <ResponsiveContainer width="100%" height="100%">
-                        <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                        <ComposedChart data={chartDataWithSpy} margin={{ top: 8, right: overlayRsi ? 44 : 8, bottom: 8, left: 8 }}>
                           <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v) => (v && String(v).slice(5)) || v} />
-                          <YAxis tick={{ fontSize: 10 }} domain={["auto", "auto"]} tickFormatter={(v) => Number(v).toFixed(0)} />
+                          {/* Left axis (default): price or % return; no yAxisId so Lines without yAxisId bind here */}
+                          <YAxis
+                            tick={{ fontSize: 10 }}
+                            domain={priceChartYDomain === "auto" ? ["auto", "auto"] : priceChartYDomain}
+                            tickFormatter={(v) => (hasOverlayData ? `${Number(v).toFixed(1)}%` : Number(v).toFixed(0))}
+                          />
+                          {overlayRsi && (
+                            <YAxis
+                              yAxisId="rsi"
+                              orientation="right"
+                              domain={[0, 100]}
+                              tick={{ fontSize: 9 }}
+                              width={36}
+                              tickFormatter={(v) => String(v)}
+                            />
+                          )}
                           <Tooltip
                             content={({ active, payload }) => {
                               if (!active || !payload?.length) return null;
-                              const p = payload[0]?.payload as PricePoint | undefined;
+                              const p = payload[0]?.payload as ChartPointWithSpy | undefined;
                               if (!p) return null;
+                              if (hasOverlayData && p.closePctReturn != null) {
+                                return (
+                                  <div className="rounded-lg border border-zinc-200 bg-white p-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+                                    <div className="font-medium">{p.date}</div>
+                                    <div>{selectedSymbol}: {p.closePctReturn >= 0 ? "+" : ""}{p.closePctReturn.toFixed(2)}% {p.close != null && <span className="text-zinc-500">(${p.close})</span>}</div>
+                                    {p.spyPctReturn != null && (
+                                      <div>SPY: {p.spyPctReturn >= 0 ? "+" : ""}{p.spyPctReturn.toFixed(2)}% {p.spyClose != null && <span className="text-zinc-500">(${p.spyClose.toFixed(2)})</span>}</div>
+                                    )}
+                                    {overlayRsi && p.rsi_14 != null && <div>RSI(14): <strong>{p.rsi_14.toFixed(1)}</strong></div>}
+                                  </div>
+                                );
+                              }
                               return (
                                 <div className="rounded-lg border border-zinc-200 bg-white p-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
                                   <div className="font-medium">{p.date}</div>
                                   <div>Close: {p.close}</div>
-                                  {p.sma_20 != null && <div>SMA(20): {p.sma_20}</div>}
-                                  {p.rsi_14 != null && <div>RSI(14): {p.rsi_14}</div>}
-                                  {p.macd_line != null && <div>MACD: {p.macd_line}</div>}
+                                  {overlayRsi && p.rsi_14 != null && <div>RSI(14): <strong>{p.rsi_14.toFixed(1)}</strong></div>}
                                   <div>Volume: {p.volume.toLocaleString()}</div>
                                 </div>
                               );
                             }}
                           />
+                          {hasOverlayData ? (
+                            <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="2 2" strokeOpacity={0.6} />
+                          ) : null}
+                          {overlayRsi && (
+                            <>
+                              <ReferenceLine yAxisId="rsi" y={70} stroke="#ef4444" strokeDasharray="2 2" strokeOpacity={0.7} />
+                              <ReferenceLine yAxisId="rsi" y={30} stroke="#22c55e" strokeDasharray="2 2" strokeOpacity={0.7} />
+                            </>
+                          )}
                           {narrativeMarkers.map((n) => (
                             <ReferenceLine key={n.date} x={n.date} stroke={STANCE_COLORS[n.stance] ?? STANCE_COLORS.neutral} strokeDasharray="2 2" strokeOpacity={0.8} />
                           ))}
-                          <Line type="monotone" dataKey="close" stroke="#3b82f6" strokeWidth={2} dot={false} name="Close" />
-                          <Line type="monotone" dataKey="sma_20" stroke="#22c55e" strokeWidth={1.5} strokeDasharray="4 2" dot={false} name="SMA(20)" />
+                          {hasOverlayData ? (
+                            <>
+                              <Line type="monotone" dataKey="closePctReturn" stroke="#3b82f6" strokeWidth={2} dot={false} name={selectedSymbol ?? "Price"} />
+                              <Line type="monotone" dataKey="spyPctReturn" stroke="#f59e0b" strokeWidth={2} strokeDasharray="4 2" dot={false} name="SPY" />
+                            </>
+                          ) : (
+                            <Line type="monotone" dataKey="close" stroke="#3b82f6" strokeWidth={2} dot={false} name="Price" />
+                          )}
+                          {overlayRsi && (
+                            <Line type="monotone" dataKey="rsi_14" yAxisId="rsi" stroke="#a855f7" strokeWidth={1.5} dot={false} name="RSI(14)" />
+                          )}
                           <Legend />
                         </ComposedChart>
                       </ResponsiveContainer>
                     </div>
+                    {overlaySpy && (
+                      <p className="mt-1 text-[10px] text-zinc-500 dark:text-zinc-400">
+                        {spyQuoteLoading ? "Loading SPY…" : hasOverlayData ? "Cumulative % return from first common date. SPY data from Alpha Vantage." : spyQuote?.prices?.length ? "Aligning dates…" : "No SPY data yet."}
+                      </p>
+                    )}
                     <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                       <div className="h-24 w-full">
                         <p className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400">RSI(14)</p>
