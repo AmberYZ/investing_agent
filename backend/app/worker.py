@@ -77,6 +77,30 @@ def _apply_llm_delay_after_request() -> None:
     time.sleep(delay)
 
 
+def _build_text_for_extraction(
+    filename: str,
+    pages: list[PageText],
+    body_text: str,
+    first_n_pages: int = 2,
+) -> str:
+    """Prepend document title and first pages to body text so extraction weights them for the main theme."""
+    title = (filename or "").strip()
+    for ext in (".pdf", ".PDF", ".txt", ".html", ".htm"):
+        if title.endswith(ext):
+            title = title[: -len(ext)].strip()
+            break
+    first_pages = [p for p in pages[:first_n_pages] if p.text and p.text.strip()]
+    first_text = "\n\n".join([f"[Page {p.page}]\n{p.text}".strip() for p in first_pages])
+    if not title and not first_text:
+        return body_text
+    prefix = ""
+    if title:
+        prefix += f"[DOCUMENT TITLE]\n{title}\n\n"
+    if first_text:
+        prefix += "[FIRST PAGES / EXECUTIVE SUMMARY — use this to identify the main theme]\n" + first_text + "\n\n---\n\n"
+    return prefix + body_text
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
@@ -423,6 +447,8 @@ def _process_job_inner(db: Session, job: IngestJob, doc: Document, storage) -> N
     len_llm = len(text_for_llm)
     if len_llm < len_full:
         logger.info("job_id=%s doc_id=%s: disclosure trim %d -> %d chars", job.id, doc.id, len_full, len_llm)
+    # Prepend document title and first pages so extraction weights them for the main theme
+    text_for_llm = _build_text_for_extraction(doc.filename, pages, text_for_llm)
     text_obj = storage.upload_bytes(
         key=f"text/{doc.id}.txt",
         data=full_text.encode("utf-8"),

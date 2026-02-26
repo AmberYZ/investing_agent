@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     llm_max_concurrent_requests: int = 3
     # Max output tokens for theme/narrative extraction. Default 16384 allows many themes, narratives, and quotes.
     # If you see truncated or limited extractions, increase (e.g. 32768). Some models cap at 8k–32k.
-    llm_extraction_max_tokens: int = 16384
+    llm_extraction_max_tokens: int = 8192
     # Max document characters sent to the LLM for theme extraction. Long reports (e.g. "Big Debates" with 24 sections)
     # need a higher limit so all sections are seen; default 300000 allows ~100+ page PDFs. Lower to save tokens/cost.
     llm_extraction_max_chars: int = 300000
@@ -111,6 +111,17 @@ class Settings(BaseSettings):
     # Python executable for Gmail script. Default "python3" so the script works with proxy/VPN
     # (backend .venv often hangs at "Using proxy"). Set to a path to use .venv, or leave unset for python3.
     gmail_sync_python: str = "python3"
+
+    # Default "active" window: themes with evidence in the last N days (by document date).
+    # Used by: list themes (active_only), network (active_days), archived API default, cleanup-empty default.
+    default_active_days: int = 60
+
+    # Periodic cleanup: remove inactive themes with < min_narratives that are not followed.
+    enable_cleanup_empty_themes: bool = True
+    cleanup_empty_themes_interval_seconds: int = 86400  # default 24h
+    cleanup_empty_themes_initial_delay_seconds: int = 300  # 5 min after startup
+    cleanup_empty_themes_inactive_days: int = 30  # no evidence in last N days = inactive; often same as default_active_days
+    cleanup_empty_themes_min_narratives: int = 3  # remove if narrative count < this
 
 
 settings = Settings()

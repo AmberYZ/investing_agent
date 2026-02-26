@@ -1,5 +1,10 @@
 Extract a summary, themes, sub-themes, and narratives from the following document text. The goal is to surface themes that affect investment decisions and can be tracked as narratives evolve over time.
 
+Main theme from title and opening (important)
+- The input may begin with [DOCUMENT TITLE] and [FIRST PAGES / EXECUTIVE SUMMARY]. These are strong signals for the document's main theme. Give them more weight than the rest of the body when deciding the primary theme.
+- Prefer one primary theme that aligns with the title and the opening (e.g. executive summary). The key theme should be clear from the title—e.g. "Natural gas value chain from AI data center" should yield one main theme for that topic, not many fragmented themes.
+- For single-topic reports (one investable thesis with multiple beneficiaries, segments, or angles), use ONE main theme whose label reflects the overarching topic from the title/opening; put specific beneficiaries, segments, or angles as sub-themes and narratives. Do not fragment into many small themes when the document is clearly about one value chain or one thesis.
+
 Coverage and richness (important)
 - For long or detailed documents, extract full breadth: multiple sub-themes and multiple narratives so that the output reflects the document's content. Do not collapse or over-summarize.
 - Each distinct claim or angle that affects investment decisions should appear as its own narrative with supporting evidence. 

@@ -447,15 +447,11 @@ def get_debated_themes(
     ]
 
 
-def get_archived_themes(
-    db: Session,
-    inactive_days: int = 60,
-) -> list:
-    """Themes with no evidence in the last N days."""
-    since_date = dt.date.today() - dt.timedelta(days=inactive_days)
+def get_active_theme_ids(db: Session, active_days: int) -> set[int]:
+    """Theme IDs that have evidence in the last active_days (by document date). Shared definition for active vs archived/inactive."""
+    since_date = dt.date.today() - dt.timedelta(days=active_days)
     doc_date = func.date(_doc_timestamp())
-    # Themes that have evidence in the window
-    active_ids = set(
+    return set(
         r.theme_id
         for r in db.query(Narrative.theme_id)
         .join(Evidence, Evidence.narrative_id == Narrative.id)
@@ -464,6 +460,14 @@ def get_archived_themes(
         .distinct()
         .all()
     )
+
+
+def get_archived_themes(
+    db: Session,
+    inactive_days: int = 60,
+) -> list:
+    """Themes with no evidence in the last N days (inactive = not in get_active_theme_ids)."""
+    active_ids = get_active_theme_ids(db, inactive_days)
     all_themes = db.query(Theme).all()
     archived = [t for t in all_themes if t.id not in active_ids]
     cutoff_new = dt.date.today() - dt.timedelta(days=7)

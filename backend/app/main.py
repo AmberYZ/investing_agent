@@ -42,7 +42,7 @@ def _theme_and_descendant_ids(db: Session, theme_id: int) -> list[int]:
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 from app.aggregations import generate_theme_narrative_summaries, run_daily_aggregations
-from app.db import engine, get_db, init_db
+from app.db import SessionLocal, engine, get_db, init_db
 from app.models import (
     Base,
     Document,
@@ -122,11 +122,12 @@ from app.schemas import (
     ThemeBasketMetricsOut,
 )
 from app.analytics import (
-    get_trending_themes,
-    get_sentiment_rankings,
-    get_inflections,
-    get_debated_themes,
+    get_active_theme_ids,
     get_archived_themes,
+    get_debated_themes,
+    get_inflections,
+    get_sentiment_rankings,
+    get_trending_themes,
 )
 from app.insights import get_theme_insights
 from app.llm.api_extract import (
@@ -139,6 +140,7 @@ from app.theme_merge import MergeOptions, compute_merge_candidates, execute_them
 from app.worker import canonicalize_label, ensure_alias
 from app.storage.gcs import GcsStorage, get_storage
 from app.followed_themes import get_followed_theme_ids, follow_theme, unfollow_theme, is_followed
+from app.theme_cleanup import delete_theme_cascade, remove_empty_unfollowed_themes
 
 
 # Basic logging
@@ -274,6 +276,39 @@ def _gmail_daily_sync_loop() -> None:
         time.sleep(interval)
 
 
+def _cleanup_empty_themes_loop() -> None:
+    """Periodically remove inactive themes with < min_narratives that are not followed."""
+    delay = getattr(settings, "cleanup_empty_themes_initial_delay_seconds", 300) or 300
+    interval = getattr(settings, "cleanup_empty_themes_interval_seconds", 86400) or 86400
+    inactive_days = getattr(settings, "cleanup_empty_themes_inactive_days", 30) or 30
+    min_narratives = getattr(settings, "cleanup_empty_themes_min_narratives", 3) or 3
+    logger.info(
+        "Cleanup empty themes loop started; first run in %ss, then every %ss (inactive_days=%s, min_narratives=%s)",
+        delay,
+        interval,
+        inactive_days,
+        min_narratives,
+    )
+    if delay > 0:
+        time.sleep(delay)
+    while True:
+        try:
+            db = SessionLocal()
+            try:
+                removed = remove_empty_unfollowed_themes(
+                    db,
+                    inactive_days=inactive_days,
+                    min_narratives=min_narratives,
+                )
+                if removed:
+                    logger.info("Cleanup empty themes: removed %s theme(s)", removed)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.exception("Cleanup empty themes failed: %s", e)
+        time.sleep(interval)
+
+
 @app.on_event("startup")
 def _startup():
     from app.logging_config import setup_logging
@@ -289,6 +324,20 @@ def _startup():
             "Gmail daily sync thread started (interval=%ss, first run in %ss)",
             getattr(settings, "gmail_daily_sync_interval_seconds", 86400),
             getattr(settings, "gmail_daily_sync_initial_delay_seconds", 60),
+        )
+    enable_cleanup = getattr(settings, "enable_cleanup_empty_themes", False)
+    logger.info("Cleanup empty themes: enable_cleanup_empty_themes=%s", enable_cleanup)
+    if enable_cleanup:
+        t = threading.Thread(
+            target=_cleanup_empty_themes_loop,
+            daemon=True,
+            name="cleanup_empty_themes",
+        )
+        t.start()
+        logger.info(
+            "Cleanup empty themes thread started (interval=%ss, first run in %ss)",
+            getattr(settings, "cleanup_empty_themes_interval_seconds", 86400),
+            getattr(settings, "cleanup_empty_themes_initial_delay_seconds", 300),
         )
 
 
@@ -494,7 +543,7 @@ def ingest_text(
 def list_themes(
     sort: str = Query("recent", description="recent or label"),
     active_only: bool = Query(False, description="If true, only themes with evidence in the last active_days"),
-    active_days: int = Query(30, ge=1, le=365, description="Used when active_only=true"),
+    active_days: int = Query(settings.default_active_days, ge=1, le=365, description="Used when active_only=true"),
     db: Session = Depends(get_db),
 ):
     now = dt.datetime.now(dt.timezone.utc)
@@ -848,7 +897,7 @@ def get_themes_contrarian_recent(
 
 @app.get("/themes/archived", response_model=list[ThemeOut])
 def list_archived_themes(
-    inactive_days: int = Query(30, ge=1, le=365, description="No evidence in the last N days"),
+    inactive_days: int = Query(settings.default_active_days, ge=1, le=365, description="No evidence in the last N days"),
     db: Session = Depends(get_db),
 ):
     """Themes with no evidence in the last N days."""
@@ -947,26 +996,15 @@ def _aggregate_network_by_canonical_label(
 
 
 def _active_theme_ids(db: Session, active_days: int) -> set[int]:
-    """Theme ids that have evidence in the last active_days (by document date)."""
-    now = dt.datetime.now(dt.timezone.utc)
-    since_date = (now - dt.timedelta(days=active_days)).date()
-    doc_date = func.date(_doc_timestamp())
-    return set(
-        r.theme_id
-        for r in db.query(Narrative.theme_id)
-        .join(Evidence, Evidence.narrative_id == Narrative.id)
-        .join(Document, Evidence.document_id == Document.id)
-        .filter(doc_date >= since_date)
-        .distinct()
-        .all()
-    )
+    """Theme ids that have evidence in the last active_days (by document date). Uses shared analytics.get_active_theme_ids."""
+    return get_active_theme_ids(db, active_days)
 
 
 @app.get("/themes/network", response_model=ThemeNetworkOut)
 def get_themes_network(
     months: int = Query(6, ge=1, le=12),
     active_only: bool = Query(True, description="If true, only themes with evidence in the last active_days"),
-    active_days: int = Query(30, ge=1, le=365, description="Used when active_only=true"),
+    active_days: int = Query(settings.default_active_days, ge=1, le=365, description="Used when active_only=true"),
     db: Session = Depends(get_db),
 ):
     """Theme co-occurrence network: nodes = themes with volume, edges = doc count where both themes appear.
@@ -1030,7 +1068,7 @@ def _network_for_date_range(
 def get_themes_network_snapshots(
     months: int = Query(6, ge=1, le=12),
     active_only: bool = Query(True, description="If true, only themes with evidence in the last active_days"),
-    active_days: int = Query(30, ge=1, le=365, description="Used when active_only=true"),
+    active_days: int = Query(settings.default_active_days, ge=1, le=365, description="Used when active_only=true"),
     db: Session = Depends(get_db),
 ):
     """One network snapshot per month for the last N months. Use to show how relationships change over time.
@@ -2541,23 +2579,24 @@ def delete_theme(theme_id: int, db: Session = Depends(get_db)):
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if not theme:
         raise HTTPException(status_code=404, detail="Theme not found")
-    # Delete tables that reference theme_id but are not ORM cascade from Theme
-    db.query(ThemeMergeReinforcement).filter(ThemeMergeReinforcement.target_theme_id == theme_id).delete(
-        synchronize_session="fetch"
-    )
-    db.query(ThemeMentionsDaily).filter(ThemeMentionsDaily.theme_id == theme_id).delete(synchronize_session="fetch")
-    db.query(ThemeRelationDaily).filter(ThemeRelationDaily.theme_id == theme_id).delete(synchronize_session="fetch")
-    db.query(ThemeSubThemeMetrics).filter(ThemeSubThemeMetrics.theme_id == theme_id).delete(synchronize_session="fetch")
-    db.query(ThemeSubThemeMentionsDaily).filter(ThemeSubThemeMentionsDaily.theme_id == theme_id).delete(
-        synchronize_session="fetch"
-    )
-    db.query(ThemeNarrativeSummaryCache).filter(ThemeNarrativeSummaryCache.theme_id == theme_id).delete(
-        synchronize_session="fetch"
-    )
-    unfollow_theme(theme_id)
-    db.delete(theme)
+    delete_theme_cascade(db, theme)
     db.commit()
     return Response(status_code=204)
+
+
+@app.post("/admin/themes/cleanup-empty")
+def cleanup_empty_themes(
+    db: Session = Depends(get_db),
+    inactive_days: int = Query(settings.default_active_days, ge=1, le=365, description="No evidence in last N days = inactive"),
+    min_narratives: int = Query(3, ge=0, description="Remove themes with narrative count < this"),
+):
+    """Remove inactive themes with fewer than min_narratives narratives that are not followed. Returns count removed."""
+    removed = remove_empty_unfollowed_themes(
+        db,
+        inactive_days=inactive_days,
+        min_narratives=min_narratives,
+    )
+    return {"removed": removed}
 
 
 @app.get("/admin/themes/diagnostic")

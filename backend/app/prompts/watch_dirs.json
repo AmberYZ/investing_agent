@@ -2,12 +2,12 @@
   "watch_dirs": [
     {
       "path": "/Users/bigoneamberzhang/Desktop/investing_agent_test",
-      "nickname": "test"
+      "nickname": "equity research"
     },
     {
       "path": "/Users/bigoneamberzhang/Library/Containers/com.tencent.xinWeChat/Data/Library/Application Support/com.tencent.xinWeChat/2.0b4.0.9/f6478c76bbd540ea86e971fcf61ce07f/Message/MessageTemp/faa6c029c13cb615dedb28797700cbc7/File",
       "nickname": "equity research"
     }
   ],
-  "config_updated_at": "2026-02-18T05:36:21.514Z"
+  "config_updated_at": "2026-02-25T05:23:16.732Z"
 }
