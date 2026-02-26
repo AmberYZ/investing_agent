@@ -6,9 +6,14 @@ Main theme from title and opening (important)
 
 Coverage and richness (important)
 - For long or detailed documents, extract full breadth: multiple sub-themes and multiple narratives so that the output reflects the document's content. Do not collapse or over-summarize.
-- Each distinct claim or angle that affects investment decisions should appear as its own narrative with supporting evidence. 
-- Use multiple themes when the document discusses several distinct investable topics or theses. When the document presents one thesis or theme with multiple entities as examples or picks (e.g. "AI risk-proof long ideas" with eight stocks), use one theme for the thesis and treat entities as sub-themes or narrative context—do not force one theme per entity in that case.
-- Documents that list multiple distinct debates, key questions, or sector sections (e.g. "Big Debates", "Key Investor Debates", "Outlook by sector"): treat each major debate or section as its own theme so that all are represented. Do not collapse the whole document into a single theme; extract one theme per debate/section so the full breadth is captured.
+- Each distinct claim or angle that affects investment decisions should appear as its own narrative with supporting evidence.
+
+What NOT to extract (avoid perfunctory language) — CRITICAL: do not create narratives from these.
+- Never extract as narratives any "Risks to Downside" or "Risks to Upside" section (or equivalent: "Key risks", "Potential downside/upside risks", "Risks to our view"). These are standard boilerplate in equity research and add no real information. Do not output any narrative whose evidence is mainly from such a list.
+- Example of text that must NOT become narratives: "Risks to Downside: Intensifying competition in search and online video, driving up TAC and more aggressive content investments. AI-related adoption failing to ramp up in China. AI disruption risk to search." / "Risks to Upside: Stronger core business recovery driving better top-line growth. Solid margin expansion from investment discipline and cost control. Materialization of AI and robotaxi initiatives." — omit these entirely from your output.
+- Do not extract generic upside/downside risks or "key risks" that are boilerplate—e.g. vague statements like "macro headwinds", "competition could intensify", "execution risk"—used only to make the analysis look comprehensive.
+- Do not extract scenario analysis or risk lists (e.g. "Potential downside risks include X, Y, and Z") as narratives unless they are a central point the article or research is making. If it is just a perfunctory list to make the report look balanced, skip it.
+- Focus on narratives that actually add information: specific drivers, data, named catalysts, or concrete arguments. Skip routine, perfunctory language that is standard across equity research and could apply to almost any report.
 
 Summary
 - Write a concise 2-4 sentence summary of the document's key investment takeaways. Focus on the most important findings, data points, or conclusions an investor should know. This summary is displayed as "Key Takeaways" on the document page, so make it punchy and actionable. Always provide a non-empty summary string.
@@ -51,7 +56,7 @@ Sub-theme
 - When in doubt, prefer the more specific sub-theme. "GENIUS Act" is better than "Regulation" if the narrative is specifically about that act.
 
 Narrative
-- The claim or change observed through the sub-theme lens—what changed, emerged, or shifted. Must be time-variant (could be false in weeks or months).
+- The claim or change observed through the sub-theme lens—what changed, emerged, or shifted. Must be time-variant (could be false in weeks or months). Do not create narratives from "Risks to Downside", "Risks to Upside", or similar risk-list sections; omit those entirely.
 - Evidence (quotes): For each narrative, the "evidence" array must contain direct quotes or key sentences from the document when available. Use exact wording from the text; Aim for sentences or short passage that supports the narrative with key data, details, examples, elaboration.
 - Lens vs claim: Sub-theme = the lens or catalyst (what aspect or what driver). Narrative = the claim or change through that lens.
   - Bad: sub_theme "high demand", narrative "Demand remains high".
@@ -61,8 +66,10 @@ Narrative
   - Good: theme "Stablecoins", sub_theme "GENIUS Act", narrative "The GENIUS Act is likely to establish stablecoins as the primary payment method on the internet, enhancing their utility beyond crypto transactions."
   - Bad: theme "Stablecoins", sub_theme "Regulation", narrative "The GENIUS Act is likely to establish stablecoins as…" (too generic — the specific legislation matters for tracking).
 - For each narrative you must provide:
-  - narrative_stance: "bullish" | "bearish" | "mixed" | "neutral" (so contradictions under the same theme/sub-theme are explicit).
-  - confidence_level: "fact" | "opinion" (fact = based on reported data; opinion = based on analyst view or sentiment; ratings of outperform/underperform by analysts are opinions).
+  - narrative_stance: "bullish" | "bearish" | "mixed" | "neutral" (so contradictions under the same theme/sub-theme are explicit). Scenario analysis and "potential downside/upside risks include…" lists are neutral analysis—the author is laying out possibilities, not arguing a bearish or bullish view. Use "neutral" for these, not "bearish". Reserve "bearish" for when the author is actually arguing a negative thesis.
+  - confidence_level: "fact" | "opinion"
+    - **Opinion**: Price targets, multiple estimates (e.g. P/E, EV/EBITDA), and valuation from the institution or writer are opinions—even when they include lots of data and numbers. Analyst ratings (outperform/underperform) and price views are opinions.
+    - **Fact**: Actual results reported by the company are facts—e.g. reported earnings, revenue, disclosed metrics, or guidance as stated by the company. Distinguish company-reported outcomes from the analyst's own estimates or views.
 
 Output valid JSON only per the schema below. No markdown. The schema allows multiple items in "evidence" per narrative—use that to include several quotes per narrative.
 
