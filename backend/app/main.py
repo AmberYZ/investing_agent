@@ -1764,14 +1764,31 @@ def search_instruments(
 
 
 @app.get("/themes/{theme_id}/instruments", response_model=list[ThemeInstrumentOut])
-def list_theme_instruments(theme_id: int, db: Session = Depends(get_db)):
-    """List stocks/ETFs associated with this theme (manual, from_documents, llm_suggested)."""
+def list_theme_instruments(
+    theme_id: int,
+    include_children: bool = Query(True, description="If true, include instruments from all descendant (child) themes so parent theme pages list child tickers."),
+    db: Session = Depends(get_db),
+):
+    """List stocks/ETFs associated with this theme (manual, from_documents, llm_suggested). With include_children=true (default) also includes instruments from all child themes."""
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
-    rows = db.query(ThemeInstrument).filter(ThemeInstrument.theme_id == theme_id).order_by(ThemeInstrument.symbol).all()
+    theme_ids = _theme_and_descendant_ids(db, theme_id) if include_children else [theme_id]
+    rows = db.query(ThemeInstrument).filter(ThemeInstrument.theme_id.in_(theme_ids)).order_by(ThemeInstrument.symbol).all()
+    theme_label_by_id: dict[int, str] = {}
+    if include_children and rows:
+        for t in db.query(Theme).filter(Theme.id.in_(theme_ids)).all():
+            theme_label_by_id[t.id] = t.canonical_label or ""
     return [
-        ThemeInstrumentOut(id=r.id, theme_id=r.theme_id, symbol=r.symbol, display_name=r.display_name, type=r.type or "stock", source=r.source or "manual")
+        ThemeInstrumentOut(
+            id=r.id,
+            theme_id=r.theme_id,
+            symbol=r.symbol,
+            display_name=r.display_name,
+            type=r.type or "stock",
+            source=r.source or "manual",
+            theme_label=theme_label_by_id.get(r.theme_id) if include_children else None,
+        )
         for r in rows
     ]
 
@@ -1779,10 +1796,10 @@ def list_theme_instruments(theme_id: int, db: Session = Depends(get_db)):
 @app.get("/themes/{theme_id}/instruments/summary", response_model=list[InstrumentSummaryOut])
 def list_theme_instruments_summary(
     theme_id: int,
-    include_children: bool = Query(False, description="If true, include instruments from all descendant (child) themes"),
+    include_children: bool = Query(True, description="If true, include instruments from all descendant (child) themes; default True so parent themes load all child tickers (e.g. on basket page)."),
     db: Session = Depends(get_db),
 ):
-    """List instruments for this theme with price and valuation metrics (for basket ticker rows). With include_children=true returns tickers from this theme and all child themes."""
+    """List instruments for this theme with price and valuation metrics (for basket ticker rows). With include_children=true (default) returns tickers from this theme and all child themes."""
     from app.market_data import get_prices_and_valuation, compute_period_returns, get_earnings_estimates, get_eps_growth
 
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
@@ -1870,9 +1887,12 @@ def delete_theme_instrument(
     instrument_id: int,
     db: Session = Depends(get_db),
 ):
-    """Remove an instrument from this theme."""
-    inst = db.query(ThemeInstrument).filter(ThemeInstrument.id == instrument_id, ThemeInstrument.theme_id == theme_id).one_or_none()
+    """Remove an instrument from this theme (or from any child theme when viewing a parent)."""
+    inst = db.query(ThemeInstrument).filter(ThemeInstrument.id == instrument_id).one_or_none()
     if inst is None:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    allowed_ids = _theme_and_descendant_ids(db, theme_id)
+    if inst.theme_id not in allowed_ids:
         raise HTTPException(status_code=404, detail="Instrument not found")
     db.delete(inst)
     db.commit()

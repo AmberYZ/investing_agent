@@ -451,6 +451,8 @@ class ThemeInstrumentOut(BaseModel):
     display_name: Optional[str] = None
     type: str = "stock"
     source: str = "manual"
+    # When include_children=true, label of the theme this instrument belongs to (may be a child).
+    theme_label: Optional[str] = None
 
 
 class ThemeInstrumentCreate(BaseModel):

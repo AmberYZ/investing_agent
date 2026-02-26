@@ -25,6 +25,8 @@ type ThemeInstrument = {
   display_name?: string | null;
   type: string;
   source: string;
+  /** When loaded with include_children, label of the theme this instrument belongs to (may be a child). */
+  theme_label?: string | null;
 };
 
 type SuggestedItem = {
@@ -214,7 +216,7 @@ export function ThemeInstruments({
   const quoteCache = useRef<Map<string, { data: InstrumentQuote; fetchedAt: number }>>(new Map());
 
   const fetchInstruments = useCallback(async () => {
-    const res = await fetch(`${API_BASE}/themes/${themeId}/instruments`, { cache: "no-store" });
+    const res = await fetch(`${API_BASE}/themes/${themeId}/instruments?include_children=true`, { cache: "no-store" });
     if (res.ok) {
       const data = await res.json();
       setInstruments(Array.isArray(data) ? data : []);
@@ -690,15 +692,18 @@ export function ThemeInstruments({
           </div>
 
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {instruments.map((inst) => (
+            {instruments.map((inst) => {
+              const fromChild = inst.theme_label && String(inst.theme_id) !== themeId;
+              return (
               <button
                 key={inst.id}
                 type="button"
                 onClick={() => handleTickerClick(inst.symbol)}
                 className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition hover:opacity-90 ${SOURCE_STYLES[inst.source] ?? SOURCE_STYLES.manual} ${viewMode === "single" && selectedSymbol === inst.symbol ? "ring-2 ring-zinc-600 dark:ring-zinc-400" : ""}`}
-                title={`${inst.symbol} (${SOURCE_LABELS[inst.source] ?? inst.source})`}
+                title={fromChild ? `${inst.symbol} (from ${inst.theme_label})` : `${inst.symbol} (${SOURCE_LABELS[inst.source] ?? inst.source})`}
               >
                 <span>{inst.symbol}</span>
+                {fromChild && <span className="text-zinc-400 dark:text-zinc-500">({inst.theme_label})</span>}
                 <span
                   role="button"
                   tabIndex={-1}
@@ -709,7 +714,8 @@ export function ThemeInstruments({
                   ×
                 </span>
               </button>
-            ))}
+              );
+            })}
             {suggestions.map((s) => (
               <div
                 key={`llm-${s.symbol}`}
