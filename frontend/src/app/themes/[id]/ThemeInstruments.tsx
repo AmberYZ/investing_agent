@@ -29,6 +29,20 @@ type ThemeInstrument = {
   theme_label?: string | null;
 };
 
+/** One instrument per symbol; when both parent and child have the same ticker, prefer the current theme's row. */
+function dedupeInstrumentsBySymbol(instruments: ThemeInstrument[], currentThemeId: string): ThemeInstrument[] {
+  const bySymbol = new Map<string, ThemeInstrument[]>();
+  for (const inst of instruments) {
+    const key = (inst.symbol || "").toUpperCase();
+    if (!bySymbol.has(key)) bySymbol.set(key, []);
+    bySymbol.get(key)!.push(inst);
+  }
+  return Array.from(bySymbol.values()).map((group) => {
+    const current = group.find((i) => String(i.theme_id) === currentThemeId);
+    return current ?? group[0];
+  });
+}
+
 type SuggestedItem = {
   symbol: string;
   display_name?: string | null;
@@ -223,6 +237,11 @@ export function ThemeInstruments({
     }
   }, [themeId]);
 
+  const dedupedInstruments = useMemo(
+    () => dedupeInstrumentsBySymbol(instruments, themeId),
+    [instruments, themeId]
+  );
+
   useEffect(() => {
     setLoading(true);
     fetchInstruments().finally(() => setLoading(false));
@@ -272,14 +291,14 @@ export function ThemeInstruments({
   }, []);
 
   useEffect(() => {
-    if (viewMode === "single" && instruments.length > 0 && !selectedSymbol) {
-      setSelectedSymbol(instruments[0].symbol);
+    if (viewMode === "single" && dedupedInstruments.length > 0 && !selectedSymbol) {
+      setSelectedSymbol(dedupedInstruments[0].symbol);
     }
-    if (viewMode === "basket" && instruments.length === 0) {
+    if (viewMode === "basket" && dedupedInstruments.length === 0) {
       setSelectedSymbol(null);
       setQuote(null);
     }
-  }, [viewMode, instruments, selectedSymbol]);
+  }, [viewMode, dedupedInstruments, selectedSymbol]);
 
   const loadQuote = useCallback(
     async (symbol: string, useCache = true): Promise<InstrumentQuote | null> => {
@@ -554,14 +573,14 @@ export function ThemeInstruments({
   const [basketSeries, setBasketSeries] = useState<{ date: string; value: number }[]>([]);
 
   useEffect(() => {
-    if (viewMode !== "basket" || instruments.length === 0) {
+    if (viewMode !== "basket" || dedupedInstruments.length === 0) {
       setBasketSeries([]);
       return;
     }
     const loadAll = async () => {
       setBasketLoading(true);
       const map = new Map<string, InstrumentQuote>();
-      for (const inst of instruments) {
+      for (const inst of dedupedInstruments) {
         const q = await loadQuote(inst.symbol);
         if (q?.prices?.length) map.set(inst.symbol, q);
       }
@@ -570,9 +589,9 @@ export function ThemeInstruments({
       setBasketLoading(false);
     };
     loadAll();
-  }, [viewMode, instruments, loadQuote]);
+  }, [viewMode, dedupedInstruments, loadQuote]);
 
-  const hasInstruments = instruments.length > 0 || suggestions.length > 0 || fromDocSuggestions.length > 0;
+  const hasInstruments = dedupedInstruments.length > 0 || suggestions.length > 0 || fromDocSuggestions.length > 0;
 
   return (
     <section
@@ -692,7 +711,7 @@ export function ThemeInstruments({
           </div>
 
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {instruments.map((inst) => {
+            {dedupedInstruments.map((inst) => {
               const fromChild = inst.theme_label && String(inst.theme_id) !== themeId;
               return (
               <button

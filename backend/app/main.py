@@ -219,6 +219,12 @@ def _gmail_daily_sync_loop() -> None:
         resolved = shutil.which(exe)
         return resolved or exe
 
+    # Absolute paths under repo/scripts/ so scheduled run always uses the same state/token as manual run.
+    scripts_dir = repo_root / "scripts"
+    gmail_state_path = str((scripts_dir / ".gmail_ingest_state").resolve())
+    gmail_token_path = str((scripts_dir / "token.json").resolve())
+    gmail_creds_path = str((scripts_dir / "credentials.json").resolve())
+
     # Build subprocess env: ensure repo .env is applied so proxy/API_BASE_URL/etc. are set
     # (backend may have been started without inheriting shell env, so copy from .env explicitly).
     def _gmail_sync_env() -> dict[str, str]:
@@ -234,6 +240,10 @@ def _gmail_daily_sync_loop() -> None:
                         env[k] = str(v).strip()
         except Exception as e:
             logger.warning("Gmail daily sync: could not load .env for subprocess: %s", e)
+        # Force same state/token/creds as manual run (override any .env so scheduled run never uses a different file).
+        env["GMAIL_STATE_PATH"] = gmail_state_path
+        env["GMAIL_TOKEN_PATH"] = gmail_token_path
+        env["GMAIL_CREDENTIALS_PATH"] = gmail_creds_path
         return env
 
     while True:

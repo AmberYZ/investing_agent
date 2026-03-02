@@ -83,10 +83,25 @@ def _script_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _repo_root() -> Path:
+    return _script_dir().parent
+
+
+def _resolve_path(env_key: str, default: Path) -> str:
+    """Resolve path to absolute so manual and scheduled (backend) runs use the same file."""
+    raw = os.environ.get(env_key)
+    if not raw or not raw.strip():
+        return str(default.resolve())
+    p = Path(raw.strip())
+    if not p.is_absolute():
+        p = _repo_root() / p
+    return str(p.resolve())
+
+
 def _get_credentials():
     script_dir = _script_dir()
-    creds_path = os.environ.get("GMAIL_CREDENTIALS_PATH") or str(script_dir / "credentials.json")
-    token_path = os.environ.get("GMAIL_TOKEN_PATH") or str(script_dir / "token.json")
+    creds_path = _resolve_path("GMAIL_CREDENTIALS_PATH", script_dir / "credentials.json")
+    token_path = _resolve_path("GMAIL_TOKEN_PATH", script_dir / "token.json")
 
     creds = None
     if os.path.exists(token_path):
@@ -109,7 +124,11 @@ def _get_credentials():
                 )
                 sys.exit(1)
             flow = InstalledAppFlow.from_client_secrets_file(creds_path, SCOPES)
-            creds = flow.run_local_server(port=0)
+            creds = flow.run_local_server(
+                port=0,
+                access_type="offline",
+                prompt="consent",
+            )
         with open(token_path, "w") as f:
             f.write(creds.to_json())
     return creds
@@ -256,8 +275,11 @@ def main() -> None:
     api_base = (os.environ.get("API_BASE_URL") or "http://127.0.0.1:8000").rstrip("/")
     label_env = os.environ.get("GMAIL_LABEL") or "Invest_Digest"
     label_names = [n.strip() for n in label_env.split(",") if n.strip()]
-    script_dir = _script_dir()
-    state_path = os.environ.get("GMAIL_STATE_PATH") or str(script_dir / ".gmail_ingest_state")
+    state_path = _resolve_path("GMAIL_STATE_PATH", _script_dir() / ".gmail_ingest_state")
+
+    if os.environ.get("GMAIL_SYNC_HEADLESS") == "1":
+        last_synced_preview, _ = load_state(state_path)
+        print(f"State file: {state_path}, last_synced: {last_synced_preview or '(none)'}", file=sys.stderr)
 
     creds = _get_credentials()
     timeout_secs = int(os.environ.get("GMAIL_API_TIMEOUT", "120"))
@@ -278,9 +300,16 @@ def main() -> None:
     try:
         for label_id in label_ids:
             list_kw = {**list_kw_base, "labelIds": [label_id]}
-            result = service.users().messages().list(**list_kw).execute()
-            for m in result.get("messages") or []:
-                all_message_ids.add(m["id"])
+            page_token = None
+            while True:
+                if page_token:
+                    list_kw["pageToken"] = page_token
+                result = service.users().messages().list(**list_kw).execute()
+                for m in result.get("messages") or []:
+                    all_message_ids.add(m["id"])
+                page_token = result.get("nextPageToken")
+                if not page_token:
+                    break
     except (socket.timeout, OSError) as e:
         print(
             "Connection to Gmail API failed (timeout or network error). "
@@ -290,10 +319,12 @@ def main() -> None:
         raise SystemExit(1) from e
     messages = [{"id": mid} for mid in all_message_ids]
     new_count = 0
+    skipped_already = 0
     had_failure = False
     for m in messages:
         mid = m["id"]
         if mid in processed:
+            skipped_already += 1
             continue
         try:
             full = service.users().messages().get(userId="me", id=mid, format="full").execute()
@@ -350,7 +381,14 @@ def main() -> None:
     if new_count:
         print(f"Done. Ingested {new_count} new message(s).")
     else:
-        print("Done. No new messages to ingest.")
+        total = len(messages)
+        if total == 0:
+            print("Done. No new messages to ingest. (No messages in label for this date range.)")
+        else:
+            print(
+                f"Done. No new messages to ingest. (Found {total} in label; "
+                f"{skipped_already} already processed, 0 new.)"
+            )
 
 
 if __name__ == "__main__":
