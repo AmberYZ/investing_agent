@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -103,6 +103,8 @@ from app.schemas import (
     ThemeNetworkOut,
     ThemeNetworkSnapshotOut,
     ThemeNetworkSnapshotsOut,
+    MegathemeNodeOut,
+    DiscussionsTimelineOut,
     ThemeDailyMetricOut,
     ThemeIdLabelOut,
     ThemeNotesOut,
@@ -137,6 +139,7 @@ from app.llm.api_extract import (
 )
 from app.settings import settings
 from app.theme_merge import MergeOptions, compute_merge_candidates, execute_theme_merge
+from app.theme_clusters import compute_megathemes
 from app.worker import canonicalize_label, ensure_alias
 from app.storage.gcs import GcsStorage, get_storage
 from app.followed_themes import get_followed_theme_ids, follow_theme, unfollow_theme, is_followed
@@ -554,6 +557,7 @@ def list_themes(
     sort: str = Query("recent", description="recent or label"),
     active_only: bool = Query(False, description="If true, only themes with evidence in the last active_days"),
     active_days: int = Query(settings.default_active_days, ge=1, le=365, description="Used when active_only=true"),
+    ids: Optional[List[int]] = Query(None, description="If set, only return themes with these IDs (e.g. for megatheme expansion)"),
     db: Session = Depends(get_db),
 ):
     now = dt.datetime.now(dt.timezone.utc)
@@ -563,6 +567,8 @@ def list_themes(
         .outerjoin(Narrative, Narrative.theme_id == Theme.id)
         .group_by(Theme.id)
     )
+    if ids is not None and len(ids) > 0:
+        q = q.filter(Theme.id.in_(ids))
     if active_only:
         since_date = (now - dt.timedelta(days=active_days)).date()
         doc_date = func.date(_doc_timestamp())
@@ -1101,6 +1107,32 @@ def get_themes_network_snapshots(
             ThemeNetworkSnapshotOut(period_label=label, nodes=nodes, edges=edges)
         )
     return ThemeNetworkSnapshotsOut(snapshots=snapshots)
+
+
+@app.get("/themes/network/discussions/snapshots", response_model=DiscussionsTimelineOut)
+def get_themes_network_discussions_snapshots(
+    days: int = Query(180, ge=1, le=730, description="Number of days of history (e.g. 180 for ~6 months)"),
+    filter_short_lived: bool = Query(True, description="Exclude themes with evidence in 1-2 days and < 3 docs"),
+    db: Session = Depends(get_db),
+):
+    """Megathemes (embedding clusters) with daily mention counts for timeline visualization.
+    Returns nodes with mention_count_by_date for every day in the range."""
+    end = dt.date.today()
+    start = end - dt.timedelta(days=days)
+    nodes = compute_megathemes(db, start, end, filter_short_lived=filter_short_lived)
+    return DiscussionsTimelineOut(
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        nodes=[
+            MegathemeNodeOut(
+                id=n.id,
+                label=n.label,
+                theme_ids=n.theme_ids,
+                mention_count_by_date=n.mention_count_by_date,
+            )
+            for n in nodes
+        ],
+    )
 
 
 def _heuristic_narrative_summary(db: Session, theme_id: int):

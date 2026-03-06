@@ -314,6 +314,21 @@ class ThemeNetworkSnapshotsOut(BaseModel):
     snapshots: list[ThemeNetworkSnapshotOut]
 
 
+class MegathemeNodeOut(BaseModel):
+    """One megatheme (cluster of themes) with daily volume for timeline viz."""
+    id: str
+    label: str
+    theme_ids: list[int]
+    mention_count_by_date: dict[str, int] = Field(default_factory=dict)  # "YYYY-MM-DD" -> count
+
+
+class DiscussionsTimelineOut(BaseModel):
+    """Megathemes with daily history for timeline slider; one response for the full range."""
+    start_date: str  # YYYY-MM-DD
+    end_date: str    # YYYY-MM-DD
+    nodes: list[MegathemeNodeOut]
+
+
 class ExtractionPromptOut(BaseModel):
     """Current theme/narrative extraction prompt template (user-editable)."""
     prompt_template: str
