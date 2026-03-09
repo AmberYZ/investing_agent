@@ -259,3 +259,43 @@ class ThemeNarrativeSummaryCache(Base):
 
     __table_args__ = (UniqueConstraint("theme_id", "period", name="uq_theme_summary_cache_theme_period"),)
 
+
+class ThemeMarketSnapshot(Base):
+    """Daily cache of market metrics per theme (primary symbol). Used by trading digest to avoid live API calls on refresh."""
+    __tablename__ = "theme_market_snapshot"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    theme_id: Mapped[int] = mapped_column(ForeignKey("themes.id", ondelete="CASCADE"), index=True)
+    snapshot_date: Mapped[dt.date] = mapped_column(Date, index=True)
+    metrics_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON dict of forward_pe, peg_ratio, pct_1m, etc.
+
+    __table_args__ = (UniqueConstraint("theme_id", "snapshot_date", name="uq_theme_market_snapshot_theme_date"),)
+
+
+class InstrumentMarketSnapshot(Base):
+    """Daily cache of market metrics per ticker symbol (basket ticker rows). Persisted so My Basket does not re-pull after restart."""
+    __tablename__ = "instrument_market_snapshot"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    snapshot_date: Mapped[dt.date] = mapped_column(Date, index=True)
+    metrics_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON: last_close, pct_1m, forward_pe, etc.
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc))
+
+    __table_args__ = (UniqueConstraint("symbol", "snapshot_date", name="uq_instrument_market_snapshot_symbol_date"),)
+
+
+class ThemeTradingDigestCache(Base):
+    """Pre-computed LLM trading digest for a theme (prevailing, what changed, worries, trade ideas)."""
+    __tablename__ = "theme_trading_digest_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    theme_id: Mapped[int] = mapped_column(ForeignKey("themes.id", ondelete="CASCADE"), index=True, unique=True)
+    period: Mapped[str] = mapped_column(String(16), default="30d")
+    prevailing: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    what_changed: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    what_market_waiting: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    worries: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    trade_ideas: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list of {label, rationale, symbol?}
+    generated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc))
+

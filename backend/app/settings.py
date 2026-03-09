@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     llm_provider: str = "openai"  # openai | gemini | openai_compatible
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"  # or gemini-1.5-flash, deepseek-chat, etc.
+    # Optional: different model for trading digest (e.g. reasoning/long-context). If unset, uses llm_model.
+    llm_trading_digest_model: str = "gpt-4o"  # e.g. gpt-4o, claude-3-5-sonnet, gemini-1.5-pro
     llm_base_url: str = ""  # optional; e.g. https://api.deepseek.com for DeepSeek
     # Request timeout in seconds for LLM API calls (Gemini can be slow on long documents).
     llm_timeout_seconds: int = 180
@@ -53,7 +55,7 @@ class Settings(BaseSettings):
     llm_delay_after_request_seconds: float = 0.0
     # Max concurrent LLM requests when processing ingested documents (worker parallelism).
     # Higher = faster throughput but more API pressure. Default 3 is safe for most providers.
-    llm_max_concurrent_requests: int = 3
+    llm_max_concurrent_requests: int = 5
     # Max output tokens for theme/narrative extraction. Default 16384 allows many themes, narratives, and quotes.
     # If you see truncated or limited extractions, increase (e.g. 32768). Some models cap at 8k–32k.
     llm_extraction_max_tokens: int = 8192
@@ -122,6 +124,13 @@ class Settings(BaseSettings):
     cleanup_empty_themes_initial_delay_seconds: int = 300  # 5 min after startup
     cleanup_empty_themes_inactive_days: int = 30  # no evidence in last N days = inactive; often same as default_active_days
     cleanup_empty_themes_min_narratives: int = 3  # remove if narrative count < this
+
+    # Daily market data refresh after market close (no external scheduler).
+    market_refresh_after_close_enabled: bool = True
+    # Time of day in the given timezone (e.g. 17 = 5 PM, 1 hour after US market close).
+    market_refresh_hour: int = 17
+    market_refresh_minute: int = 0
+    market_refresh_tz: str = "America/New_York"
 
 
 settings = Settings()

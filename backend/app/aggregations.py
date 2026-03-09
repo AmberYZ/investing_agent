@@ -20,12 +20,29 @@ from app.models import (
     Narrative,
     NarrativeMentionsDaily,
     Theme,
+    ThemeInstrument,
     ThemeMentionsDaily,
     ThemeNarrativeSummaryCache,
     ThemeRelationDaily,
     ThemeSubThemeMentionsDaily,
     ThemeSubThemeMetrics,
 )
+
+
+def _theme_and_descendant_ids(db: Session, theme_id: int) -> list[int]:
+    """Return [theme_id] plus all descendant theme IDs (children, grandchildren, ...)."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if not theme:
+        return []
+    out = [theme_id]
+    stack = [theme_id]
+    while stack:
+        pid = stack.pop()
+        child_ids = [r[0] for r in db.query(Theme.id).filter(Theme.parent_theme_id == pid).all()]
+        for cid in child_ids:
+            out.append(cid)
+            stack.append(cid)
+    return out
 
 
 def _get_or_create_theme_daily(db: Session, theme_id: int, date: dt.date) -> ThemeMentionsDaily:
@@ -289,6 +306,48 @@ def run_daily_aggregations(target_date: Optional[dt.date] = None) -> None:
             import logging
             logging.getLogger("investing_agent.aggregations").warning(
                 "LLM narrative summary generation failed: %s", e
+            )
+
+        # 5) Populate daily market cache for followed themes (so digest refresh does not hit Alpha Vantage)
+        try:
+            from app.followed_themes import get_followed_theme_ids
+            from app.trading_digest import populate_daily_market_cache, populate_instrument_market_cache
+            followed_ids = get_followed_theme_ids()
+            if followed_ids:
+                populate_daily_market_cache(db, followed_ids)
+                # All ticker symbols from followed themes (for basket ticker rows; persisted so no re-pull after restart)
+                theme_ids_nested = [_theme_and_descendant_ids(db, tid) for tid in followed_ids]
+                theme_ids_flat = [tid for sub in theme_ids_nested for tid in sub]
+                if theme_ids_flat:
+                    symbols = [
+                        r[0] for r in
+                        db.query(ThemeInstrument.symbol)
+                        .filter(ThemeInstrument.theme_id.in_(theme_ids_flat))
+                        .distinct()
+                        .all()
+                        if r[0]
+                    ]
+                    if symbols:
+                        populate_instrument_market_cache(db, symbols)
+        except Exception as e:
+            import logging
+            logging.getLogger("investing_agent.aggregations").warning(
+                "Daily market cache populate failed: %s", e
+            )
+
+        # 6) Generate trading digests for basket view (prevailing, what_changed, worries, trade_ideas)
+        try:
+            from app.trading_digest import generate_theme_trading_digests
+            digest_count = generate_theme_trading_digests(db)
+            if digest_count > 0:
+                import logging
+                logging.getLogger("investing_agent.aggregations").info(
+                    "Generated %d theme trading digests", digest_count
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger("investing_agent.aggregations").warning(
+                "Trading digest generation failed: %s", e
             )
     finally:
         db.close()

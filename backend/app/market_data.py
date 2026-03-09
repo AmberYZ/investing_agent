@@ -144,6 +144,10 @@ def _is_rate_limit_error(message: str) -> bool:
 _SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _SEARCH_CACHE_TTL = 300  # 5 minutes
 
+# News cache: key = symbol, value = (cached_at, list[dict]); 1h TTL to respect rate limits
+_NEWS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_NEWS_CACHE_TTL = 3600  # 1 hour
+
 
 def search_symbols(keywords: str) -> dict[str, Any]:
     """
@@ -245,6 +249,108 @@ def search_symbols(keywords: str) -> dict[str, Any]:
         if not out["message"]:
             _SEARCH_CACHE[cache_key] = (time.monotonic(), out)
     return out
+
+
+def fetch_news_for_ticker(symbol: str, limit: int = 10) -> dict[str, Any]:
+    """
+    Alpha Vantage NEWS_SENTIMENT: fetch recent news for a ticker.
+    Returns {"items": [{"title", "url", "time", "source", "sentiment"}], "message": None or error string}.
+    Uses same throttle as other AV calls; results cached 1h to respect rate limits.
+    """
+    global _last_request_time
+    symbol = (symbol or "").strip().upper()
+    out: dict[str, Any] = {"items": [], "message": None}
+    if not symbol:
+        out["message"] = "Symbol required."
+        return out
+
+    api_key = (settings.alpha_vantage_api_key or "").strip()
+    if not api_key:
+        out["message"] = "Alpha Vantage API key not set. Add ALPHA_VANTAGE_API_KEY to .env"
+        return out
+
+    now = time.monotonic()
+    with _lock:
+        if symbol in _NEWS_CACHE:
+            cached_at, cached = _NEWS_CACHE[symbol]
+            if now - cached_at < _NEWS_CACHE_TTL:
+                return {"items": cached, "message": None}
+            del _NEWS_CACHE[symbol]
+        elapsed = now - _last_request_time
+        if elapsed < _min_seconds_between_requests():
+            time.sleep(_min_seconds_between_requests() - elapsed)
+        _last_request_time = time.monotonic()
+
+    try:
+        import httpx
+    except ImportError:
+        out["message"] = "httpx not installed"
+        return out
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.get(
+                BASE_URL,
+                params={
+                    "function": "NEWS_SENTIMENT",
+                    "tickers": symbol,
+                    "limit": min(limit, 50),
+                    "apikey": api_key,
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        out["message"] = str(e)
+        if _is_rate_limit_error(out["message"]):
+            out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
+        return out
+
+    with _lock:
+        _last_request_time = time.monotonic()
+
+    if not isinstance(data, dict):
+        return out
+    if "Error Message" in data:
+        out["message"] = data["Error Message"]
+        return out
+    if "Note" in data:
+        note = data["Note"]
+        if _is_rate_limit_error(note):
+            out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
+        else:
+            out["message"] = note
+        return out
+
+    feed = data.get("feed") or []
+    items: list[dict[str, Any]] = []
+    for entry in feed[:limit]:
+        if not isinstance(entry, dict):
+            continue
+        title = (entry.get("title") or "").strip()
+        if not title:
+            continue
+        url = (entry.get("url") or "").strip() or None
+        time_pub = entry.get("time_published")  # e.g. 20240306T120000
+        time_str = str(time_pub)[:16] if time_pub else None
+        source = (entry.get("source") or "").strip() or None
+        sentiment = None
+        if isinstance(entry.get("overall_sentiment_score"), (int, float)):
+            sentiment = str(round(float(entry["overall_sentiment_score"]), 2))
+        elif isinstance(entry.get("overall_sentiment_label"), str) and entry["overall_sentiment_label"]:
+            sentiment = entry["overall_sentiment_label"]
+        items.append({
+            "title": title,
+            "url": url,
+            "time": time_str,
+            "source": source,
+            "sentiment": sentiment,
+        })
+
+    with _lock:
+        if not out["message"]:
+            _NEWS_CACHE[symbol] = (time.monotonic(), items)
+    return {"items": items, "message": None}
 
 
 def compute_period_returns(prices: list[dict[str, Any]]) -> dict[str, float | None]:

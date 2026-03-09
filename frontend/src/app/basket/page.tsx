@@ -12,6 +12,7 @@ type BasketItem = {
   description: string | null;
   instrument_count: number;
   primary_symbol?: string | null;
+  market_data_as_of?: string | null;
   forward_pe?: number | null;
   peg_ratio?: number | null;
   latest_rsi?: number | null;
@@ -31,6 +32,7 @@ type InstrumentSummary = {
   display_name?: string | null;
   type: string;
   source: string;
+  market_data_as_of?: string | null;
   last_close?: number | null;
   pct_1m?: number | null;
   pct_3m?: number | null;
@@ -57,6 +59,7 @@ type BasketTickerRow = InstrumentSummary & {
 type TickerDisplayRow = Omit<InstrumentSummary, "id"> & {
   theme_ids: number[];
   theme_labels: string[];
+  market_data_as_of?: string | null;
 };
 
 function dedupeTickerRowsBySymbol(rows: BasketTickerRow[]): TickerDisplayRow[] {
@@ -91,10 +94,23 @@ function dedupeTickerRowsBySymbol(rows: BasketTickerRow[]): TickerDisplayRow[] {
       eps_revision_down_30d: first.eps_revision_down_30d,
       eps_growth_pct: first.eps_growth_pct,
       message: first.message,
+      market_data_as_of: first.market_data_as_of,
       theme_ids,
       theme_labels,
     };
   });
+}
+
+/** Format YYYY-MM-DD as "5 Mar 2025" for display */
+function formatMarketDataAsOf(isoDate: string | null | undefined): string | null {
+  if (!isoDate) return null;
+  try {
+    const d = new Date(isoDate + "T12:00:00Z");
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  } catch {
+    return null;
+  }
 }
 
 type NarrativeItem = {
@@ -103,6 +119,18 @@ type NarrativeItem = {
   last_seen: string;
   narrative_stance?: string | null;
   sub_theme?: string | null;
+};
+
+/** Trading digest for one theme (from GET /basket/trading-digest) */
+type TradeIdeaItem = { symbol?: string | null; label?: string | null; rationale: string };
+type RelatedNewsItem = { title: string; url?: string | null; time?: string | null; source?: string | null; sentiment?: string | null };
+type TradingDigestItem = {
+  prevailing?: string | null;
+  what_changed?: string | null;
+  what_market_waiting?: string | null;
+  worries?: string | null;
+  trade_ideas: TradeIdeaItem[];
+  related_news: RelatedNewsItem[];
 };
 
 function fmtPct(v: number | null | undefined): string {
@@ -154,28 +182,19 @@ function ThemeSection({
   item,
   onUnfollowRefetch,
   metricsLoading = false,
+  digest = null,
+  digestLoading = false,
 }: {
   item: BasketItem;
   onUnfollowRefetch?: () => void;
   metricsLoading?: boolean;
+  digest?: TradingDigestItem | null;
+  digestLoading?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [tickers, setTickers] = useState<InstrumentSummary[]>([]);
   const [tickersLoading, setTickersLoading] = useState(false);
   const [priceBlink, setPriceBlink] = useState<Record<string, boolean>>({});
-  const [narratives, setNarratives] = useState<NarrativeItem[]>([]);
-  const [narrativesLoading, setNarrativesLoading] = useState(true);
-
-  useEffect(() => {
-    setNarrativesLoading(true);
-    fetch(`${API_BASE}/themes/${item.id}/narratives?${NARRATIVES_QUERY}&include_children=true`, { cache: "no-store" })
-      .then((res) => (res.ok ? res.json() : []))
-      .then((data: NarrativeItem[]) => {
-        setNarratives(Array.isArray(data) ? data : []);
-      })
-      .catch(() => setNarratives([]))
-      .finally(() => setNarrativesLoading(false));
-  }, [item.id]);
 
   const fetchTickers = useCallback(() => {
     if (!expanded) return;
@@ -218,8 +237,8 @@ function ThemeSection({
 
   useEffect(() => {
     if (!expanded || tickers.length === 0) return;
-    const t = setInterval(refreshTickersWithBlink, 30000);
-    return () => clearInterval(t);
+    // End-of-day data only for now: no automatic intra-day polling to keep the UI snappy
+    // and avoid unnecessary live market data calls.
   }, [expanded, tickers.length, refreshTickersWithBlink]);
 
   const sentiment = expanded ? themeSentimentSummary(item, tickers) : null;
@@ -253,6 +272,11 @@ function ThemeSection({
             <p className="mt-1.5 text-sm text-zinc-600 dark:text-zinc-300">
               {themeSummaryLine(item, metricsLoading)}
             </p>
+            {formatMarketDataAsOf(item.market_data_as_of) && (
+              <p className="mt-0.5 text-[11px] text-zinc-400 dark:text-zinc-500">
+                Market data as of {formatMarketDataAsOf(item.market_data_as_of)}
+              </p>
+            )}
             {sentiment && (
               <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                 {sentiment}
@@ -268,52 +292,96 @@ function ThemeSection({
           </button>
         </div>
 
-        {/* Latest narratives - full width below header */}
+        {/* Trading digest - prevailing, what changed, catalysts, worries, trade ideas, related news */}
         <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
-          <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Narratives (most recent date)</h3>
-          {narrativesLoading ? (
-            <p className="mt-1.5 text-xs text-zinc-400 dark:text-zinc-500">Loading…</p>
-          ) : narratives.length === 0 ? (
-            <p className="mt-1.5 text-xs text-zinc-400 dark:text-zinc-500">No narratives on the most recent date.</p>
+          {digestLoading ? (
+            <p className="text-xs text-zinc-400 dark:text-zinc-500">Loading digest…</p>
+          ) : digest && (digest.prevailing || digest.what_changed || digest.what_market_waiting || digest.worries || (digest.trade_ideas?.length ?? 0) > 0 || (digest.related_news?.length ?? 0) > 0) ? (
+            <div className="space-y-4">
+              {digest.prevailing && (
+                <div>
+                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Prevailing</h3>
+                  <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{digest.prevailing}</p>
+                </div>
+              )}
+              {digest.what_changed && (
+                <div>
+                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">What changed recently</h3>
+                  <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{digest.what_changed}</p>
+                </div>
+              )}
+              {digest.what_market_waiting && (
+                <div>
+                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">What the market is waiting for</h3>
+                  <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{digest.what_market_waiting}</p>
+                </div>
+              )}
+              {digest.worries && (
+                <div>
+                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Worries</h3>
+                  <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{digest.worries}</p>
+                </div>
+              )}
+              {digest.trade_ideas && digest.trade_ideas.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Trade ideas</h3>
+                  <ul className="mt-1.5 space-y-2">
+                    {digest.trade_ideas.map((idea, i) => (
+                      <li key={i} className="text-sm text-zinc-700 dark:text-zinc-200">
+                        {idea.symbol && (
+                          <span className="font-medium text-zinc-800 dark:text-zinc-100">{idea.symbol}</span>
+                        )}
+                        {idea.symbol && idea.label && " · "}
+                        {idea.label && (
+                          <span className="font-medium text-zinc-800 dark:text-zinc-100">{idea.label}</span>
+                        )}
+                        {(idea.symbol || idea.label) && " — "}
+                        <span>{idea.rationale}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {digest.related_news && digest.related_news.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Related news</h3>
+                  <ul className="mt-1.5 space-y-1.5">
+                    {digest.related_news.map((news, i) => (
+                      <li key={i} className="text-sm">
+                        {news.url ? (
+                          <a href={news.url} target="_blank" rel="noopener noreferrer" className="text-zinc-700 dark:text-zinc-200 hover:underline line-clamp-2">
+                            {news.title}
+                          </a>
+                        ) : (
+                          <span className="text-zinc-700 dark:text-zinc-200 line-clamp-2">{news.title}</span>
+                        )}
+                        {(news.source ?? news.time) && (
+                          <span className="ml-1 text-[11px] text-zinc-400 dark:text-zinc-500">
+                            {[news.source, news.time].filter(Boolean).join(" · ")}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <Link
+                href={`/themes/${item.id}`}
+                className="inline-block text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-400"
+              >
+                View all narratives →
+              </Link>
+            </div>
           ) : (
-            <ul className="mt-1.5 space-y-3">
-              {narratives.map((n) => (
-                <li key={n.id} className="flex flex-col gap-0.5">
-                  <span className="text-sm text-zinc-700 dark:text-zinc-200 line-clamp-3">
-                    {n.statement}
-                  </span>
-                  <span className="flex flex-wrap items-center gap-x-2 gap-y-0 text-[11px] text-zinc-400 dark:text-zinc-500">
-                    {n.narrative_stance && (
-                      <span
-                        className={
-                          n.narrative_stance === "bullish"
-                            ? "font-medium text-emerald-600 dark:text-emerald-400"
-                            : n.narrative_stance === "bearish"
-                              ? "font-medium text-red-600 dark:text-red-400"
-                              : n.narrative_stance === "mixed"
-                                ? "text-amber-600 dark:text-amber-400"
-                                : ""
-                        }
-                      >
-                        {n.narrative_stance}
-                      </span>
-                    )}
-                    {n.sub_theme && <span>{n.sub_theme}</span>}
-                    <span>
-                      {n.last_seen ? new Date(n.last_seen).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : ""}
-                    </span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {narratives.length > 0 && (
-            <Link
-              href={`/themes/${item.id}`}
-              className="mt-3 inline-block text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-400"
-            >
-              View all narratives →
-            </Link>
+            <>
+              <p className="text-xs text-zinc-400 dark:text-zinc-500">Digest will appear after the next daily run. Use &quot;Refresh digest&quot; above to generate now.</p>
+              <Link
+                href={`/themes/${item.id}`}
+                className="mt-2 inline-block text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-400"
+              >
+                View all narratives →
+              </Link>
+            </>
           )}
         </div>
 
@@ -326,7 +394,13 @@ function ThemeSection({
                 No tickers. Add some on the theme page.
               </p>
             ) : (
-              <div className="overflow-x-auto">
+              <>
+                {formatMarketDataAsOf(tickers[0]?.market_data_as_of) && (
+                  <p className="mb-2 text-[11px] text-zinc-400 dark:text-zinc-500">
+                    Market data as of {formatMarketDataAsOf(tickers[0].market_data_as_of)}
+                  </p>
+                )}
+                <div className="overflow-x-auto">
                 <table className="w-full min-w-[800px] text-left text-sm">
                   <thead>
                     <tr className="border-b border-zinc-200 dark:border-zinc-700">
@@ -400,6 +474,7 @@ function ThemeSection({
                   </tbody>
                 </table>
               </div>
+              </>
             )}
           </div>
         )}
@@ -425,6 +500,9 @@ export default function BasketPage() {
   const [createDesc, setCreateDesc] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [digestByTheme, setDigestByTheme] = useState<Record<string, TradingDigestItem>>({});
+  const [digestLoading, setDigestLoading] = useState(false);
+  const [digestRefreshing, setDigestRefreshing] = useState(false);
 
   const fetchBasket = useCallback(() => {
     setLoading(true);
@@ -544,9 +622,49 @@ export default function BasketPage() {
       });
   }, []);
 
+  const fetchTradingDigest = useCallback(() => {
+    setDigestLoading(true);
+    return fetch(`${API_BASE}/basket/trading-digest?include_news=false`, { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : {}))
+      .then((data: Record<string, TradingDigestItem>) => {
+        setDigestByTheme(typeof data === "object" && data !== null ? data : {});
+      })
+      .catch(() => setDigestByTheme({}))
+      .finally(() => setDigestLoading(false));
+  }, []);
+
+  const [digestRefreshMessage, setDigestRefreshMessage] = useState<string | null>(null);
+
+  const refreshDigest = useCallback(async () => {
+    setDigestRefreshing(true);
+    setDigestRefreshMessage(null);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000); // 10 min
+    try {
+      const res = await fetch(`${API_BASE}/admin/generate-trading-digests?followed_only=true`, {
+        method: "POST",
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.message ?? "Generate failed");
+      await fetchTradingDigest();
+      setDigestRefreshMessage(data?.message ?? "Digests refreshed.");
+    } catch (e) {
+      clearTimeout(timeoutId);
+      setDigestRefreshMessage(e instanceof Error ? e.message : "Refresh failed");
+    } finally {
+      setDigestRefreshing(false);
+    }
+  }, [fetchTradingDigest]);
+
   useEffect(() => {
     fetchBasket();
   }, [fetchBasket]);
+
+  useEffect(() => {
+    if (viewMode === "theme" && items.length > 0) fetchTradingDigest();
+  }, [viewMode, items.length, fetchTradingDigest]);
 
   useEffect(() => {
     if (viewMode === "ticker") fetchTickers();
@@ -609,6 +727,17 @@ export default function BasketPage() {
             >
               By ticker
             </button>
+            {viewMode === "theme" && items.length > 0 && (
+              <button
+                type="button"
+                onClick={refreshDigest}
+                disabled={digestRefreshing}
+                className="rounded-lg border border-zinc-300 bg-white px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 disabled:cursor-not-allowed dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                title="Refresh trading digests for followed themes."
+              >
+                {digestRefreshing ? "Refreshing…" : "Refresh digest"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setShowCreate(!showCreate)}
@@ -617,6 +746,11 @@ export default function BasketPage() {
               {showCreate ? "Cancel" : "Create theme"}
             </button>
           </div>
+          {digestRefreshMessage && (
+            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400 max-w-xl">
+              {digestRefreshMessage}
+            </p>
+          )}
         </div>
 
         {showCreate && (
@@ -684,6 +818,11 @@ export default function BasketPage() {
               <>
                 {tickerMetricsLoading && (
                   <p className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">Loading metrics…</p>
+                )}
+                {formatMarketDataAsOf(tickerRows[0]?.market_data_as_of) && !tickerMetricsLoading && (
+                  <p className="mt-4 text-[11px] text-zinc-400 dark:text-zinc-500">
+                    Market data as of {formatMarketDataAsOf(tickerRows[0].market_data_as_of)}
+                  </p>
                 )}
                 <div className="mt-6 overflow-x-auto rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
                 <table className="w-full min-w-[900px] text-left text-sm">
@@ -792,6 +931,8 @@ export default function BasketPage() {
                     key={item.id}
                     item={item}
                     onUnfollowRefetch={fetchBasket}
+                    digest={digestByTheme[String(item.id)] ?? null}
+                    digestLoading={digestLoading}
                     metricsLoading={metricsLoading.has(item.id)}
                   />
                 ))}

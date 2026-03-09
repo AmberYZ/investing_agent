@@ -123,6 +123,7 @@ class ThemeNotesUpdate(BaseModel):
 class BasketSummaryItemOut(BasketItemOut):
     """Basket row with optional price/valuation metrics (from primary ticker)."""
     primary_symbol: Optional[str] = None
+    market_data_as_of: Optional[str] = None  # ISO date (YYYY-MM-DD) of cached snapshot
     forward_pe: Optional[float] = None
     peg_ratio: Optional[float] = None
     latest_rsi: Optional[float] = None
@@ -142,6 +143,7 @@ class ThemeBasketMetricsOut(BaseModel):
     """Metrics for one theme's primary ticker (for lazy-loaded basket)."""
     theme_id: int
     primary_symbol: Optional[str] = None
+    market_data_as_of: Optional[str] = None  # ISO date of cached snapshot
     forward_pe: Optional[float] = None
     peg_ratio: Optional[float] = None
     latest_rsi: Optional[float] = None
@@ -280,6 +282,32 @@ class BatchNarrativeSummaryItemOut(BaseModel):
     summary: str
     trending_sub_themes: list[str] = Field(default_factory=list)
     inflection_alert: Optional[str] = None
+
+
+class RelatedNewsItemOut(BaseModel):
+    """One news item from Alpha Vantage (or similar) for a theme."""
+    title: str
+    url: Optional[str] = None
+    time: Optional[str] = None
+    source: Optional[str] = None
+    sentiment: Optional[str] = None
+
+
+class TradeIdeaOut(BaseModel):
+    """One trade idea with optional symbol (for multi-instrument themes) and strategy tag."""
+    symbol: Optional[str] = None  # ticker when theme has multiple instruments
+    label: Optional[str] = None  # e.g. "Buy dips", "Sell puts on dips"
+    rationale: str
+
+
+class TradingDigestItemOut(BaseModel):
+    """Trading-oriented digest for one theme (basket view)."""
+    prevailing: Optional[str] = None
+    what_changed: Optional[str] = None
+    what_market_waiting: Optional[str] = None
+    worries: Optional[str] = None
+    trade_ideas: list[TradeIdeaOut] = Field(default_factory=list)
+    related_news: list[RelatedNewsItemOut] = Field(default_factory=list)
 
 
 class NarrativeShiftOut(BaseModel):
@@ -514,6 +542,7 @@ class InstrumentSummaryOut(BaseModel):
     # When include_children=true, the theme this instrument belongs to (may be a child).
     theme_id: Optional[int] = None
     theme_label: Optional[str] = None
+    market_data_as_of: Optional[str] = None  # ISO date (YYYY-MM-DD) of cached snapshot
     last_close: Optional[float] = None
     pct_1m: Optional[float] = None
     pct_3m: Optional[float] = None
@@ -539,6 +568,7 @@ class BasketTickerRowOut(BaseModel):
     display_name: Optional[str] = None
     type: str = "stock"
     source: str = "manual"
+    market_data_as_of: Optional[str] = None  # ISO date of cached snapshot
     last_close: Optional[float] = None
     pct_1m: Optional[float] = None
     pct_3m: Optional[float] = None

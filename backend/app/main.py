@@ -55,10 +55,13 @@ from app.models import (
     ThemeInstrument,
     ThemeMergeReinforcement,
     ThemeMentionsDaily,
+    ThemeMarketSnapshot,
     ThemeNarrativeSummaryCache,
     ThemeRelationDaily,
     ThemeSubThemeMetrics,
     ThemeSubThemeMentionsDaily,
+    ThemeTradingDigestCache,
+    InstrumentMarketSnapshot,
 )
 from app.schemas import (
     AdminThemeOut,
@@ -84,6 +87,9 @@ from app.schemas import (
     NarrativeSummaryOut,
     NarrativeSummaryExtendedOut,
     BatchNarrativeSummaryItemOut,
+    RelatedNewsItemOut,
+    TradeIdeaOut,
+    TradingDigestItemOut,
     ThemeMetricsByConfidenceOut,
     ThemeMetricsByStanceOut,
     ThemeSubThemeDailyOut,
@@ -322,6 +328,72 @@ def _cleanup_empty_themes_loop() -> None:
         time.sleep(interval)
 
 
+def _run_market_cache_refresh() -> None:
+    """Fill theme_market_snapshot and instrument_market_snapshot for followed themes (used by daily schedule)."""
+    from app.followed_themes import get_followed_theme_ids
+    from app.trading_digest import populate_daily_market_cache, populate_instrument_market_cache
+
+    db = SessionLocal()
+    try:
+        followed_ids = get_followed_theme_ids()
+        if not followed_ids:
+            logger.info("Market refresh: no followed themes, skipping")
+            return
+        n_themes = populate_daily_market_cache(db, followed_ids)
+        theme_ids_flat = []
+        for tid in followed_ids:
+            theme_ids_flat.extend(_theme_and_descendant_ids(db, tid))
+        theme_ids_flat = list(set(theme_ids_flat))
+        symbols = [
+            r[0]
+            for r in db.query(ThemeInstrument.symbol)
+            .filter(ThemeInstrument.theme_id.in_(theme_ids_flat))
+            .distinct()
+            .all()
+            if r[0]
+        ]
+        n_instruments = populate_instrument_market_cache(db, symbols) if symbols else 0
+        logger.info("Market refresh: %s themes, %s instruments updated", n_themes, n_instruments)
+    finally:
+        db.close()
+
+
+def _market_refresh_after_close_loop() -> None:
+    """Run market cache refresh daily at configured time (e.g. after US market close)."""
+    from zoneinfo import ZoneInfo
+
+    enabled = getattr(settings, "market_refresh_after_close_enabled", True)
+    if not enabled:
+        return
+    hour = getattr(settings, "market_refresh_hour", 17)
+    minute = getattr(settings, "market_refresh_minute", 0)
+    tz_name = getattr(settings, "market_refresh_tz", "America/New_York")
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception as e:
+        logger.warning("Market refresh: invalid timezone %s: %s; skipping schedule", tz_name, e)
+        return
+    logger.info(
+        "Market refresh after close: scheduled daily at %02d:%02d %s",
+        hour,
+        minute,
+        tz_name,
+    )
+    while True:
+        try:
+            now = dt.datetime.now(tz)
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if now >= target:
+                target += dt.timedelta(days=1)
+            sleep_seconds = (target - now).total_seconds()
+            logger.info("Market refresh: next run in %.0f s (at %s)", sleep_seconds, target.isoformat())
+            time.sleep(sleep_seconds)
+            _run_market_cache_refresh()
+        except Exception as e:
+            logger.exception("Market refresh failed: %s", e)
+            time.sleep(3600)  # avoid tight loop on repeated failure
+
+
 @app.on_event("startup")
 def _startup():
     from app.logging_config import setup_logging
@@ -352,6 +424,15 @@ def _startup():
             getattr(settings, "cleanup_empty_themes_interval_seconds", 86400),
             getattr(settings, "cleanup_empty_themes_initial_delay_seconds", 300),
         )
+    enable_market_refresh = getattr(settings, "market_refresh_after_close_enabled", True)
+    logger.info("Market refresh after close: enabled=%s", enable_market_refresh)
+    if enable_market_refresh:
+        t = threading.Thread(
+            target=_market_refresh_after_close_loop,
+            daemon=True,
+            name="market_refresh_after_close",
+        )
+        t.start()
 
 
 @app.get("/health")
@@ -680,14 +761,65 @@ def unfollow_theme_endpoint(theme_id: int, db: Session = Depends(get_db)):
 
 
 def _theme_primary_symbol(db: Session, theme_id: int) -> str | None:
-    # Single-column query returns the value, not a row
-    symbol = (
+    # Single-column query returns Row (e.g. ('DIS',)) in SQLAlchemy 2; unpack to scalar
+    row = (
         db.query(ThemeInstrument.symbol)
         .filter(ThemeInstrument.theme_id == theme_id)
         .order_by(ThemeInstrument.symbol)
         .first()
     )
-    return symbol if symbol is not None else None
+    if row is None:
+        return None
+    # Row is tuple-like; row[0] is the symbol string. If it's already a str, use it.
+    if isinstance(row, str):
+        return row.strip() or None
+    try:
+        val = row[0]
+    except (TypeError, IndexError):
+        val = row
+    return str(val).strip() if val is not None and str(val).strip() else None
+
+
+def _basket_metrics_from_cache(db: Session, theme_id: int) -> tuple[dict | None, dt.date | None]:
+    """Return (cached basket metrics, snapshot_date) for this theme (latest daily snapshot) if available.
+
+    Looks up the most recent ThemeMarketSnapshot for this theme (by snapshot_date)
+    so we always serve the latest end-of-day style data without triggering new
+    Alpha Vantage calls on-demand.
+    """
+    import json as _json
+    row = (
+        db.query(ThemeMarketSnapshot)
+        .filter(ThemeMarketSnapshot.theme_id == theme_id)
+        .order_by(ThemeMarketSnapshot.snapshot_date.desc())
+        .first()
+    )
+    if not row or not row.metrics_json:
+        return None, None
+    try:
+        return _json.loads(row.metrics_json), row.snapshot_date
+    except Exception:
+        return None, None
+
+
+def _instrument_metrics_from_cache(db: Session, symbol: str) -> tuple[dict | None, dt.date | None]:
+    """Return (cached instrument metrics, snapshot_date) for this symbol (latest daily snapshot) if available."""
+    import json as _json
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return None, None
+    row = (
+        db.query(InstrumentMarketSnapshot)
+        .filter(InstrumentMarketSnapshot.symbol == sym)
+        .order_by(InstrumentMarketSnapshot.snapshot_date.desc())
+        .first()
+    )
+    if not row or not row.metrics_json:
+        return None, None
+    try:
+        return _json.loads(row.metrics_json), row.snapshot_date
+    except Exception:
+        return None, None
 
 
 def _basket_metrics_for_symbol(primary_symbol: str) -> dict:
@@ -777,8 +909,14 @@ def get_basket_summary(
         primary_symbol = primary_by_id.get(tid)
         if primary_symbol:
             row.primary_symbol = primary_symbol
+        # Metrics: use cached daily snapshot only (no live Alpha Vantage on-demand).
+        # If no snapshot exists yet, return theme row without metrics so the UI stays fast.
         if include_metrics and primary_symbol:
-            metrics = _basket_metrics_for_symbol(primary_symbol)
+            metrics, snapshot_date = _basket_metrics_from_cache(db, tid)
+            if not metrics:
+                result.append(row)
+                continue
+            row.market_data_as_of = snapshot_date.isoformat() if snapshot_date else None
             row.forward_pe = metrics.get("forward_pe")
             row.peg_ratio = metrics.get("peg_ratio")
             row.latest_rsi = metrics.get("latest_rsi")
@@ -805,12 +943,117 @@ def get_theme_basket_metrics(theme_id: int, db: Session = Depends(get_db)):
     primary_symbol = _theme_primary_symbol(db, theme_id)
     if not primary_symbol:
         return ThemeBasketMetricsOut(theme_id=theme_id)
-    metrics = _basket_metrics_for_symbol(primary_symbol)
+    # Use cached daily snapshot only; do not hit Alpha Vantage on-demand.
+    metrics, snapshot_date = _basket_metrics_from_cache(db, theme_id)
+    if not metrics:
+        return ThemeBasketMetricsOut(theme_id=theme_id, primary_symbol=primary_symbol)
     return ThemeBasketMetricsOut(
         theme_id=theme_id,
         primary_symbol=primary_symbol,
+        market_data_as_of=snapshot_date.isoformat() if snapshot_date else None,
         **{k: v for k, v in metrics.items() if k in ThemeBasketMetricsOut.model_fields},
     )
+
+
+@app.get("/themes/{theme_id}/related-news", response_model=list[RelatedNewsItemOut])
+def get_theme_related_news(theme_id: int, limit: int = Query(10, le=50), db: Session = Depends(get_db)):
+    """Recent news for this theme's primary ticker (Alpha Vantage NEWS_SENTIMENT, cached 1h)."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    primary_symbol = _theme_primary_symbol(db, theme_id)
+    if not primary_symbol:
+        return []
+    from app.market_data import fetch_news_for_ticker
+    news_res = fetch_news_for_ticker(primary_symbol, limit=limit)
+    items = news_res.get("items") or []
+    return [
+        RelatedNewsItemOut(
+            title=n.get("title") or "",
+            url=n.get("url"),
+            time=n.get("time"),
+            source=n.get("source"),
+            sentiment=n.get("sentiment"),
+        )
+        for n in items
+    ]
+
+
+@app.get("/basket/trading-digest", response_model=dict[str, TradingDigestItemOut])
+def get_basket_trading_digest(
+    db: Session = Depends(get_db),
+    include_news: bool = Query(False, description="If true, fetch related news per theme (Alpha Vantage). Disabled by default."),
+):
+    """Trading-oriented digest for each followed theme: prevailing, what_changed, what_market_waiting, worries, trade_ideas. related_news disabled by default."""
+    import json as _json
+    ids = get_followed_theme_ids()
+    if not ids:
+        return {}
+    cached = (
+        db.query(ThemeTradingDigestCache)
+        .filter(
+            ThemeTradingDigestCache.theme_id.in_(ids),
+            ThemeTradingDigestCache.period == "30d",
+        )
+        .all()
+    )
+    digest_by_theme: dict[int, ThemeTradingDigestCache] = {c.theme_id: c for c in cached}
+    primary_by_id: dict[int, str] = {}
+    for tid, sym in (
+        db.query(ThemeInstrument.theme_id, ThemeInstrument.symbol)
+        .filter(ThemeInstrument.theme_id.in_(ids))
+        .order_by(ThemeInstrument.theme_id, ThemeInstrument.symbol)
+        .all()
+    ):
+        if tid not in primary_by_id:
+            primary_by_id[tid] = sym
+
+    out: dict[str, TradingDigestItemOut] = {}
+    for tid in ids:
+        row = digest_by_theme.get(tid)
+        trade_ideas: list[TradeIdeaOut] = []
+        if row and row.trade_ideas:
+            try:
+                raw = _json.loads(row.trade_ideas)
+                if isinstance(raw, list):
+                    for item in raw:
+                        if isinstance(item, dict) and item.get("rationale"):
+                            trade_ideas.append(
+                                TradeIdeaOut(
+                                    symbol=item.get("symbol"),
+                                    label=item.get("label"),
+                                    rationale=str(item["rationale"]),
+                                )
+                            )
+                        elif isinstance(item, str) and item.strip():
+                            trade_ideas.append(TradeIdeaOut(symbol=None, label=None, rationale=item.strip()))
+            except Exception:
+                pass
+        related_news: list[RelatedNewsItemOut] = []
+        if include_news:
+            primary_symbol = primary_by_id.get(tid)
+            if primary_symbol:
+                from app.market_data import fetch_news_for_ticker
+                news_res = fetch_news_for_ticker(primary_symbol, limit=5)
+                for n in (news_res.get("items") or [])[:5]:
+                    related_news.append(
+                        RelatedNewsItemOut(
+                            title=n.get("title") or "",
+                            url=n.get("url"),
+                            time=n.get("time"),
+                            source=n.get("source"),
+                            sentiment=n.get("sentiment"),
+                        )
+                    )
+        out[str(tid)] = TradingDigestItemOut(
+            prevailing=row.prevailing if row else None,
+            what_changed=row.what_changed if row else None,
+            what_market_waiting=row.what_market_waiting if row else None,
+            worries=row.worries if row else None,
+            trade_ideas=trade_ideas,
+            related_news=related_news,
+        )
+    return out
 
 
 @app.get("/basket/tickers", response_model=list[BasketTickerRowOut])
@@ -821,7 +1064,7 @@ def get_basket_tickers(
         description="If false, return only theme + symbol (fast). Client can load metrics in parallel via /themes/{id}/instruments/summary.",
     ),
 ):
-    """Flat list of all tickers across followed themes (including child themes) with theme tag. Set include_metrics=true for server-side metrics (slow)."""
+    """Flat list of all tickers across followed themes (including child themes) with theme tag. Metrics from DB cache when include_metrics=true."""
     ids = get_followed_theme_ids()
     if not ids:
         return []
@@ -841,6 +1084,7 @@ def get_basket_tickers(
             .all()
         )
         for r in rows:
+            metrics, snapshot_date = _instrument_metrics_from_cache(db, r.symbol) if include_metrics else (None, None)
             row = BasketTickerRowOut(
                 theme_id=r.theme_id,
                 canonical_label=label_by_id.get(r.theme_id, ""),
@@ -849,42 +1093,22 @@ def get_basket_tickers(
                 display_name=r.display_name,
                 type=r.type or "stock",
                 source=r.source or "manual",
+                market_data_as_of=snapshot_date.isoformat() if snapshot_date else None,
             )
-            if include_metrics:
-                from app.market_data import (
-                    get_prices_and_valuation,
-                    compute_period_returns,
-                    get_earnings_estimates,
-                    get_eps_growth,
-                )
-                try:
-                    data = get_prices_and_valuation(r.symbol, months=6)
-                    prices = data.get("prices") or []
-                    if prices:
-                        returns = compute_period_returns(prices)
-                        row.pct_1m = returns.get("pct_1m")
-                        row.pct_3m = returns.get("pct_3m")
-                        row.pct_ytd = returns.get("pct_ytd")
-                        last_bar = prices[-1]
-                        row.last_close = (
-                            float(last_bar.get("close", 0)) if last_bar.get("close") is not None else None
-                        )
-                        if isinstance(last_bar.get("rsi_14"), (int, float)):
-                            row.latest_rsi = round(float(last_bar["rsi_14"]), 2)
-                    row.forward_pe = data.get("forward_pe")
-                    row.peg_ratio = data.get("peg_ratio")
-                    row.quarterly_earnings_growth_yoy = data.get("quarterly_earnings_growth_yoy")
-                    row.quarterly_revenue_growth_yoy = data.get("quarterly_revenue_growth_yoy")
-                    if data.get("message"):
-                        row.message = data["message"]
-                    est = get_earnings_estimates(r.symbol)
-                    row.next_fy_eps_estimate = est.get("next_fy_eps_estimate")
-                    row.eps_revision_up_30d = est.get("eps_revision_up_30d")
-                    row.eps_revision_down_30d = est.get("eps_revision_down_30d")
-                    growth = get_eps_growth(r.symbol)
-                    row.eps_growth_pct = growth.get("eps_growth_pct")
-                except Exception:
-                    pass
+            if include_metrics and metrics:
+                row.last_close = metrics.get("last_close")
+                row.pct_1m = metrics.get("pct_1m")
+                row.pct_3m = metrics.get("pct_3m")
+                row.pct_ytd = metrics.get("pct_ytd")
+                row.forward_pe = metrics.get("forward_pe")
+                row.peg_ratio = metrics.get("peg_ratio")
+                row.latest_rsi = metrics.get("latest_rsi")
+                row.quarterly_earnings_growth_yoy = metrics.get("quarterly_earnings_growth_yoy")
+                row.quarterly_revenue_growth_yoy = metrics.get("quarterly_revenue_growth_yoy")
+                row.next_fy_eps_estimate = metrics.get("next_fy_eps_estimate")
+                row.eps_revision_up_30d = metrics.get("eps_revision_up_30d")
+                row.eps_revision_down_30d = metrics.get("eps_revision_down_30d")
+                row.eps_growth_pct = metrics.get("eps_growth_pct")
             result.append(row)
     return result
 
@@ -1841,9 +2065,7 @@ def list_theme_instruments_summary(
     include_children: bool = Query(True, description="If true, include instruments from all descendant (child) themes; default True so parent themes load all child tickers (e.g. on basket page)."),
     db: Session = Depends(get_db),
 ):
-    """List instruments for this theme with price and valuation metrics (for basket ticker rows). With include_children=true (default) returns tickers from this theme and all child themes."""
-    from app.market_data import get_prices_and_valuation, compute_period_returns, get_earnings_estimates, get_eps_growth
-
+    """List instruments for this theme with price and valuation metrics (for basket ticker rows). Uses DB cache only (no live Alpha Vantage). With include_children=true (default) returns tickers from this theme and all child themes."""
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
@@ -1852,6 +2074,7 @@ def list_theme_instruments_summary(
     theme_label_by_id = {t.id: t.canonical_label for t in db.query(Theme).filter(Theme.id.in_(theme_ids)).all()}
     result: list[InstrumentSummaryOut] = []
     for r in rows:
+        metrics, snapshot_date = _instrument_metrics_from_cache(db, r.symbol)
         row = InstrumentSummaryOut(
             id=r.id,
             symbol=r.symbol,
@@ -1860,33 +2083,22 @@ def list_theme_instruments_summary(
             source=r.source or "manual",
             theme_id=r.theme_id if include_children else None,
             theme_label=theme_label_by_id.get(r.theme_id) if include_children else None,
+            market_data_as_of=snapshot_date.isoformat() if snapshot_date else None,
         )
-        try:
-            data = get_prices_and_valuation(r.symbol, months=6)
-            prices = data.get("prices") or []
-            if prices:
-                returns = compute_period_returns(prices)
-                row.pct_1m = returns.get("pct_1m")
-                row.pct_3m = returns.get("pct_3m")
-                row.pct_ytd = returns.get("pct_ytd")
-                last_bar = prices[-1]
-                row.last_close = float(last_bar.get("close", 0)) if last_bar.get("close") is not None else None
-                if isinstance(last_bar.get("rsi_14"), (int, float)):
-                    row.latest_rsi = round(float(last_bar["rsi_14"]), 2)
-            row.forward_pe = data.get("forward_pe")
-            row.peg_ratio = data.get("peg_ratio")
-            row.quarterly_earnings_growth_yoy = data.get("quarterly_earnings_growth_yoy")
-            row.quarterly_revenue_growth_yoy = data.get("quarterly_revenue_growth_yoy")
-            if data.get("message"):
-                row.message = data["message"]
-            est = get_earnings_estimates(r.symbol)
-            row.next_fy_eps_estimate = est.get("next_fy_eps_estimate")
-            row.eps_revision_up_30d = est.get("eps_revision_up_30d")
-            row.eps_revision_down_30d = est.get("eps_revision_down_30d")
-            growth = get_eps_growth(r.symbol)
-            row.eps_growth_pct = growth.get("eps_growth_pct")
-        except Exception:
-            pass
+        if metrics:
+            row.last_close = metrics.get("last_close")
+            row.pct_1m = metrics.get("pct_1m")
+            row.pct_3m = metrics.get("pct_3m")
+            row.pct_ytd = metrics.get("pct_ytd")
+            row.forward_pe = metrics.get("forward_pe")
+            row.peg_ratio = metrics.get("peg_ratio")
+            row.latest_rsi = metrics.get("latest_rsi")
+            row.quarterly_earnings_growth_yoy = metrics.get("quarterly_earnings_growth_yoy")
+            row.quarterly_revenue_growth_yoy = metrics.get("quarterly_revenue_growth_yoy")
+            row.next_fy_eps_estimate = metrics.get("next_fy_eps_estimate")
+            row.eps_revision_up_30d = metrics.get("eps_revision_up_30d")
+            row.eps_revision_down_30d = metrics.get("eps_revision_down_30d")
+            row.eps_growth_pct = metrics.get("eps_growth_pct")
         result.append(row)
     return result
 
@@ -2970,3 +3182,33 @@ def trigger_narrative_summaries(
     """Generate LLM narrative summaries for themes (past 30 days). Pre-computes what the theme page shows."""
     count = generate_theme_narrative_summaries(db, theme_id=theme_id)
     return {"ok": True, "summaries_generated": count}
+
+
+@app.post("/admin/generate-trading-digests")
+def trigger_trading_digests(
+    theme_id: Optional[int] = Query(None, description="Generate for a specific theme (omit for all)"),
+    followed_only: bool = Query(False, description="If true, generate only for themes the user follows (basket)."),
+) -> dict:
+    """Run trading digest generation in the request. Returns when done so the UI can keep the button disabled until finished."""
+    from app.db import SessionLocal
+    from app.trading_digest import generate_theme_trading_digests
+
+    if followed_only:
+        ids = get_followed_theme_ids()
+        theme_ids_arg: Optional[list[int]] = ids if ids else None
+        theme_id_arg: Optional[int] = None
+    else:
+        theme_ids_arg = None
+        theme_id_arg = theme_id
+
+    db = SessionLocal()
+    try:
+        count = generate_theme_trading_digests(db, theme_id=theme_id_arg, theme_ids=theme_ids_arg)
+        return {
+            "ok": True,
+            "status": "done",
+            "digests_generated": count,
+            "message": f"Generated {count} trading digest(s).",
+        }
+    finally:
+        db.close()
