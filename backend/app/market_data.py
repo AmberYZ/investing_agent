@@ -538,7 +538,9 @@ def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
                 hl = data_fund.get("Highlights") or {}
                 tech = data_fund.get("Technicals") or {}
                 ar = data_fund.get("AnalystRatings") or {}
-                vg = data_fund.get("Valuations_Growth") or {}
+                # ETF-specific valuation growth block lives under ETF_Data.Valuations_Growth.
+                etf = data_fund.get("ETF_Data") or {}
+                vg = (etf.get("Valuations_Growth") if isinstance(etf, dict) else None) or data_fund.get("Valuations_Growth") or {}
                 vrp = vg.get("Valuations_Rates_Portfolio") if isinstance(vg, dict) else {}
                 out["trailing_pe"] = _safe_float(val, "TrailingPE") or _safe_float(hl, "PERatio")
                 out["forward_pe"] = _safe_float(val, "ForwardPE")
