@@ -26,7 +26,7 @@ google-api-python-client>=2.100
 
 # GCP optional: install with pip install -r requirements-gcp.txt when using Vertex/GCS
 
-# Market data (stocks/ETFs): Alpha Vantage via httpx (already listed above)
+# Market data (stocks/ETFs): EODHD via httpx (already listed above)
 
 # Utils
 python-dotenv>=1.0

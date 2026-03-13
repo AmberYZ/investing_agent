@@ -74,12 +74,7 @@ def _get_cached_metrics_for_theme(db: Session, theme_id: int) -> dict[str, Any] 
 
 def _basket_metrics_for_symbol(primary_symbol: str) -> dict[str, Any]:
     """Fetch basket-style metrics for one symbol (for LLM context)."""
-    from app.market_data import (
-        compute_period_returns,
-        get_earnings_estimates,
-        get_eps_growth,
-        get_prices_and_valuation,
-    )
+    from app.market_data import compute_period_returns, get_prices_and_valuation
 
     out: dict[str, Any] = {
         "forward_pe": None,
@@ -90,10 +85,24 @@ def _basket_metrics_for_symbol(primary_symbol: str) -> dict[str, Any]:
         "pct_ytd": None,
         "pct_6m": None,
         "quarterly_earnings_growth_yoy": None,
-        "next_fy_eps_estimate": None,
-        "eps_revision_up_30d": None,
-        "eps_revision_down_30d": None,
-        "eps_growth_pct": None,
+        "quarterly_revenue_growth_yoy": None,
+        "analyst_target_price": None,
+        "analyst_strong_buy": None,
+        "analyst_buy": None,
+        "analyst_hold": None,
+        "analyst_sell": None,
+        "analyst_strong_sell": None,
+        "eps_growth_0y_pct": None,
+        "eps_growth_1y_pct": None,
+        "price_sales_ttm": None,
+        "price_book_mrq": None,
+        "enterprise_value_ebitda": None,
+        "week_52_high": None,
+        "week_52_low": None,
+        "return_on_equity_ttm": None,
+        "operating_margin_ttm": None,
+        "profit_margin": None,
+        "trailing_12m_eps": None,
     }
     try:
         data = get_prices_and_valuation(primary_symbol, months=6)
@@ -110,14 +119,24 @@ def _basket_metrics_for_symbol(primary_symbol: str) -> dict[str, Any]:
         out["forward_pe"] = data.get("forward_pe")
         out["peg_ratio"] = data.get("peg_ratio")
         out["quarterly_earnings_growth_yoy"] = data.get("quarterly_earnings_growth_yoy")
-        est = get_earnings_estimates(primary_symbol)
-        if est:
-            out["next_fy_eps_estimate"] = est.get("next_fy_eps_estimate")
-            out["eps_revision_up_30d"] = est.get("eps_revision_up_30d")
-            out["eps_revision_down_30d"] = est.get("eps_revision_down_30d")
-        growth = get_eps_growth(primary_symbol)
-        if growth:
-            out["eps_growth_pct"] = growth.get("eps_growth_pct")
+        out["quarterly_revenue_growth_yoy"] = data.get("quarterly_revenue_growth_yoy")
+        out["analyst_target_price"] = data.get("analyst_target_price")
+        out["analyst_strong_buy"] = data.get("analyst_strong_buy")
+        out["analyst_buy"] = data.get("analyst_buy")
+        out["analyst_hold"] = data.get("analyst_hold")
+        out["analyst_sell"] = data.get("analyst_sell")
+        out["analyst_strong_sell"] = data.get("analyst_strong_sell")
+        out["eps_growth_0y_pct"] = data.get("eps_growth_0y_pct")
+        out["eps_growth_1y_pct"] = data.get("eps_growth_1y_pct")
+        out["price_sales_ttm"] = data.get("price_sales_ttm")
+        out["price_book_mrq"] = data.get("price_book_mrq")
+        out["enterprise_value_ebitda"] = data.get("enterprise_value_ebitda")
+        out["week_52_high"] = data.get("week_52_high")
+        out["week_52_low"] = data.get("week_52_low")
+        out["return_on_equity_ttm"] = data.get("return_on_equity_ttm")
+        out["operating_margin_ttm"] = data.get("operating_margin_ttm")
+        out["profit_margin"] = data.get("profit_margin")
+        out["trailing_12m_eps"] = data.get("trailing_12m_eps")
     except Exception as e:
         logger.debug("Metrics fetch for %s failed: %s", primary_symbol, e)
     return out
@@ -164,12 +183,8 @@ def populate_daily_market_cache(db: Session, theme_ids: list[int]) -> int:
 
 def _instrument_metrics_for_symbol(symbol: str) -> dict[str, Any]:
     """Fetch full instrument-row metrics for one symbol (last_close, pct_*, forward_pe, etc.) for DB cache."""
-    from app.market_data import (
-        compute_period_returns,
-        get_earnings_estimates,
-        get_eps_growth,
-        get_prices_and_valuation,
-    )
+    from app.market_data import compute_period_returns, get_prices_and_valuation
+
     out: dict[str, Any] = {
         "last_close": None,
         "forward_pe": None,
@@ -180,10 +195,23 @@ def _instrument_metrics_for_symbol(symbol: str) -> dict[str, Any]:
         "pct_ytd": None,
         "quarterly_earnings_growth_yoy": None,
         "quarterly_revenue_growth_yoy": None,
-        "next_fy_eps_estimate": None,
-        "eps_revision_up_30d": None,
-        "eps_revision_down_30d": None,
-        "eps_growth_pct": None,
+        "analyst_target_price": None,
+        "analyst_strong_buy": None,
+        "analyst_buy": None,
+        "analyst_hold": None,
+        "analyst_sell": None,
+        "analyst_strong_sell": None,
+        "eps_growth_0y_pct": None,
+        "eps_growth_1y_pct": None,
+        "price_sales_ttm": None,
+        "price_book_mrq": None,
+        "enterprise_value_ebitda": None,
+        "week_52_high": None,
+        "week_52_low": None,
+        "return_on_equity_ttm": None,
+        "operating_margin_ttm": None,
+        "profit_margin": None,
+        "trailing_12m_eps": None,
     }
     try:
         data = get_prices_and_valuation(symbol, months=6)
@@ -202,14 +230,23 @@ def _instrument_metrics_for_symbol(symbol: str) -> dict[str, Any]:
         out["peg_ratio"] = data.get("peg_ratio")
         out["quarterly_earnings_growth_yoy"] = data.get("quarterly_earnings_growth_yoy")
         out["quarterly_revenue_growth_yoy"] = data.get("quarterly_revenue_growth_yoy")
-        est = get_earnings_estimates(symbol)
-        if est:
-            out["next_fy_eps_estimate"] = est.get("next_fy_eps_estimate")
-            out["eps_revision_up_30d"] = est.get("eps_revision_up_30d")
-            out["eps_revision_down_30d"] = est.get("eps_revision_down_30d")
-        growth = get_eps_growth(symbol)
-        if growth:
-            out["eps_growth_pct"] = growth.get("eps_growth_pct")
+        out["analyst_target_price"] = data.get("analyst_target_price")
+        out["analyst_strong_buy"] = data.get("analyst_strong_buy")
+        out["analyst_buy"] = data.get("analyst_buy")
+        out["analyst_hold"] = data.get("analyst_hold")
+        out["analyst_sell"] = data.get("analyst_sell")
+        out["analyst_strong_sell"] = data.get("analyst_strong_sell")
+        out["eps_growth_0y_pct"] = data.get("eps_growth_0y_pct")
+        out["eps_growth_1y_pct"] = data.get("eps_growth_1y_pct")
+        out["price_sales_ttm"] = data.get("price_sales_ttm")
+        out["price_book_mrq"] = data.get("price_book_mrq")
+        out["enterprise_value_ebitda"] = data.get("enterprise_value_ebitda")
+        out["week_52_high"] = data.get("week_52_high")
+        out["week_52_low"] = data.get("week_52_low")
+        out["return_on_equity_ttm"] = data.get("return_on_equity_ttm")
+        out["operating_margin_ttm"] = data.get("operating_margin_ttm")
+        out["profit_margin"] = data.get("profit_margin")
+        out["trailing_12m_eps"] = data.get("trailing_12m_eps")
     except Exception as e:
         logger.debug("Instrument metrics fetch for %s failed: %s", symbol, e)
     return out
@@ -318,8 +355,10 @@ def generate_theme_trading_digests(
                 parts.append(f"3M return: {metrics['pct_3m']}%")
             if metrics.get("latest_rsi") is not None:
                 parts.append(f"RSI: {metrics['latest_rsi']}")
-            if metrics.get("eps_growth_pct") is not None:
-                parts.append(f"EPS growth %: {metrics['eps_growth_pct']}")
+            if metrics.get("eps_growth_0y_pct") is not None:
+                parts.append(f"EPS growth 0y %: {metrics['eps_growth_0y_pct']}")
+            if metrics.get("eps_growth_1y_pct") is not None:
+                parts.append(f"EPS growth +1y %: {metrics['eps_growth_1y_pct']}")
             metrics_str = "; ".join(parts)
         if instruments:
             metrics_str += f"\nInstruments in the user's list for this theme (give ideas per symbol when multiple): {', '.join(instruments)}"

@@ -1,14 +1,13 @@
 """
-Market data for instruments (stocks/ETFs) via Alpha Vantage.
+Market data for instruments (stocks/ETFs) via EODHD.
 Returns price history and valuation (trailing PE, forward PE, PEG, earnings growth) for the frontend chart.
-Uses in-memory cache (configurable TTL, default 2h) and light throttling (configurable; default 1s between requests for 75/min limit).
+Uses in-memory cache (configurable TTL, default 2h) and light throttling.
 
 Notes:
-- Forward PE and PEG: Alpha Vantage OVERVIEW does provide ForwardPE and PEGRatio (see demo response).
-  They often appear as "-" or empty for non-US symbols, small caps, or when analyst estimates are missing.
-  We only parse overview when the response contains "Symbol" (so rate-limit/error responses are skipped).
-- PE percentile vs 5-year history: built from EARNINGS + daily prices; percentile is computed relative to
-  the past 5 years (not just the chart range). Chart series is still trimmed to the requested range.
+- EODHD uses ticker format SYMBOL.EXCHANGE (e.g., AAPL.US). We append .US for symbols without an exchange.
+- Fundamentals: Valuation (TrailingPE, ForwardPE), Highlights (PEGRatio, QuarterlyEarningsGrowthYOY, etc.)
+- Earnings: Earnings.History has quarterly epsActual; we build trailing 12M EPS from reported quarters.
+- News: /api/news?s=TICKER returns list with title, link, date, sentiment.
 """
 
 from __future__ import annotations
@@ -18,6 +17,9 @@ import threading
 import time
 from typing import Any
 
+from sqlalchemy import text
+
+from app.db import engine
 from app.settings import settings
 
 _CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
@@ -26,15 +28,26 @@ _EARNINGS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _last_request_time: float = 0.0
 _lock = threading.Lock()
 
+BASE_URL = "https://eodhd.com/api"
+
 
 def _cache_ttl_seconds() -> int:
-    return getattr(settings, "alpha_vantage_cache_ttl_seconds", 7200)
+    return getattr(settings, "eodhd_cache_ttl_seconds", 7200)
 
 
 def _min_seconds_between_requests() -> float:
-    return getattr(settings, "alpha_vantage_min_seconds_between_requests", 1.0)
+    return getattr(settings, "eodhd_min_seconds_between_requests", 0.1)
 
-BASE_URL = "https://www.alphavantage.co/query"
+
+def _to_eodhd_symbol(symbol: str) -> str:
+    """Convert symbol (e.g. AAPL, SPY) to EODHD format (e.g. AAPL.US)."""
+    s = (symbol or "").strip().upper()
+    if not s:
+        return ""
+    if "." in s:
+        return s
+    return f"{s}.US"
+
 
 # ~21 trading days per month (252/year); use for bar count so "6 months" ≈ 6 calendar months
 TRADING_DAYS_PER_MONTH = 21
@@ -93,7 +106,9 @@ def _ema(values: list[float], period: int) -> list[float]:
     return out
 
 
-def _macd(closes: list[float], fast: int, slow: int, signal: int) -> tuple[list[float | None], list[float | None], list[float | None]]:
+def _macd(
+    closes: list[float], fast: int, slow: int, signal: int
+) -> tuple[list[float | None], list[float | None], list[float | None]]:
     """MACD line, signal line, histogram. None until enough data for slow EMA."""
     n = len(closes)
     macd_line: list[float | None] = [None] * n
@@ -137,23 +152,53 @@ def _add_indicators(prices: list[dict[str, Any]]) -> None:
 
 def _is_rate_limit_error(message: str) -> bool:
     msg = (message or "").lower()
-    return "rate limit" in msg or "too many requests" in msg or "429" in msg or "try after" in msg or "premium" in msg
+    return "rate limit" in msg or "too many requests" in msg or "429" in msg or "try after" in msg
+
+
+def _lookup_forward_pe_from_portfolio(symbol: str) -> float | None:
+    """
+    Fallback for forward P/E when missing from the data provider.
+
+    Looks up price / prospective earnings from the valuations_rates_portfolio table
+    (if present in the same database), keyed by symbol.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return None
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT price_prospective_earnings "
+                    "FROM valuations_rates_portfolio "
+                    "WHERE symbol = :symbol"
+                ),
+                {"symbol": sym},
+            ).first()
+        if not row:
+            return None
+        value = row[0]
+        if value in (None, "", "None", "-"):
+            return None
+        return round(float(value), 2)
+    except Exception:
+        # Silently ignore if the table/column does not exist or value is invalid.
+        return None
 
 
 # Symbol search cache: key = normalized keywords, value = (cached_at, list[dict]); short TTL for typeahead
 _SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _SEARCH_CACHE_TTL = 300  # 5 minutes
 
-# News cache: key = symbol, value = (cached_at, list[dict]); 1h TTL to respect rate limits
+# News cache: key = symbol, value = (cached_at, list[dict]); 1h TTL
 _NEWS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _NEWS_CACHE_TTL = 3600  # 1 hour
 
 
 def search_symbols(keywords: str) -> dict[str, Any]:
     """
-    Alpha Vantage SYMBOL_SEARCH: search by company name or ticker for typeahead when adding instruments.
-    Returns {"matches": [...], "message": None or error string}. Uses same throttle as other AV calls;
-    results cached briefly (5 min) to avoid repeated calls while typing.
+    EODHD Search API: search by company name or ticker for typeahead when adding instruments.
+    Returns {"matches": [...], "message": None or error string}.
     """
     global _last_request_time
     keywords = (keywords or "").strip()[:64]
@@ -161,9 +206,9 @@ def search_symbols(keywords: str) -> dict[str, Any]:
     if not keywords:
         return out
 
-    api_key = (settings.alpha_vantage_api_key or "").strip()
+    api_key = (getattr(settings, "eodhd_api_key", "") or "").strip()
     if not api_key:
-        out["message"] = "Alpha Vantage API key not set. Add ALPHA_VANTAGE_API_KEY to .env"
+        out["message"] = "EODHD API key not set. Add EODHD_API_KEY to .env"
         return out
 
     cache_key = keywords.lower()
@@ -172,7 +217,7 @@ def search_symbols(keywords: str) -> dict[str, Any]:
         if cache_key in _SEARCH_CACHE:
             cached_at, cached = _SEARCH_CACHE[cache_key]
             if now - cached_at < _SEARCH_CACHE_TTL:
-                return cached
+                return {"matches": cached, "message": None}
             del _SEARCH_CACHE[cache_key]
         elapsed = now - _last_request_time
         if elapsed < _min_seconds_between_requests():
@@ -186,11 +231,9 @@ def search_symbols(keywords: str) -> dict[str, Any]:
         return out
 
     try:
+        url = f"{BASE_URL}/search/{keywords}"
         with httpx.Client(timeout=15.0) as client:
-            r = client.get(
-                BASE_URL,
-                params={"function": "SYMBOL_SEARCH", "keywords": keywords, "apikey": api_key},
-            )
+            r = client.get(url, params={"api_token": api_key, "fmt": "json", "limit": 25})
             r.raise_for_status()
             data = r.json()
     except Exception as e:
@@ -202,40 +245,29 @@ def search_symbols(keywords: str) -> dict[str, Any]:
     with _lock:
         _last_request_time = time.monotonic()
 
-    if not isinstance(data, dict):
-        return out
-    if "Error Message" in data:
-        out["message"] = data["Error Message"]
-        return out
-    if "Note" in data:
-        note = data["Note"]
-        if _is_rate_limit_error(note):
-            out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
-        else:
-            out["message"] = note
+    if not isinstance(data, list):
         return out
 
-    best_matches = data.get("bestMatches") or []
-    for row in best_matches:
+    for i, row in enumerate(data[:25]):
         if not isinstance(row, dict):
             continue
-        symbol = (row.get("1. symbol") or "").strip()
-        if not symbol:
+        code = (row.get("Code") or "").strip()
+        if not code:
             continue
-        name = (row.get("2. name") or "").strip() or None
-        raw_type = (row.get("3. type") or "").strip().lower()
-        if "etf" in raw_type:
+        exchange = (row.get("Exchange") or "US").strip()
+        # Store base symbol for US (e.g. AAPL); full Code.Exchange for others (e.g. AAPL.BA)
+        symbol = code if (exchange and exchange.upper() == "US") else f"{code}.{exchange}"
+        name = (row.get("Name") or "").strip() or None
+        raw_type = (row.get("Type") or "").strip().lower()
+        if "etf" in raw_type or "fund" in raw_type:
             type_ = "etf"
         elif raw_type:
             type_ = raw_type[:16]
         else:
             type_ = "stock"
-        region = (row.get("4. region") or "").strip() or None
-        currency = (row.get("8. currency") or "").strip() or None
-        try:
-            match_score = float(row.get("9. matchScore", 0) or 0)
-        except (TypeError, ValueError):
-            match_score = 0.0
+        region = (row.get("Country") or "").strip() or None
+        currency = (row.get("Currency") or "").strip() or None
+        match_score = 1.0 - (i * 0.02) if i < 20 else 0.6
         out["matches"].append({
             "symbol": symbol,
             "name": name,
@@ -247,15 +279,14 @@ def search_symbols(keywords: str) -> dict[str, Any]:
 
     with _lock:
         if not out["message"]:
-            _SEARCH_CACHE[cache_key] = (time.monotonic(), out)
+            _SEARCH_CACHE[cache_key] = (time.monotonic(), out["matches"])
     return out
 
 
 def fetch_news_for_ticker(symbol: str, limit: int = 10) -> dict[str, Any]:
     """
-    Alpha Vantage NEWS_SENTIMENT: fetch recent news for a ticker.
+    EODHD News API: fetch recent news for a ticker.
     Returns {"items": [{"title", "url", "time", "source", "sentiment"}], "message": None or error string}.
-    Uses same throttle as other AV calls; results cached 1h to respect rate limits.
     """
     global _last_request_time
     symbol = (symbol or "").strip().upper()
@@ -264,11 +295,12 @@ def fetch_news_for_ticker(symbol: str, limit: int = 10) -> dict[str, Any]:
         out["message"] = "Symbol required."
         return out
 
-    api_key = (settings.alpha_vantage_api_key or "").strip()
+    api_key = (getattr(settings, "eodhd_api_key", "") or "").strip()
     if not api_key:
-        out["message"] = "Alpha Vantage API key not set. Add ALPHA_VANTAGE_API_KEY to .env"
+        out["message"] = "EODHD API key not set. Add EODHD_API_KEY to .env"
         return out
 
+    eodhd_symbol = _to_eodhd_symbol(symbol)
     now = time.monotonic()
     with _lock:
         if symbol in _NEWS_CACHE:
@@ -290,13 +322,8 @@ def fetch_news_for_ticker(symbol: str, limit: int = 10) -> dict[str, Any]:
     try:
         with httpx.Client(timeout=15.0) as client:
             r = client.get(
-                BASE_URL,
-                params={
-                    "function": "NEWS_SENTIMENT",
-                    "tickers": symbol,
-                    "limit": min(limit, 50),
-                    "apikey": api_key,
-                },
+                f"{BASE_URL}/news",
+                params={"s": eodhd_symbol, "api_token": api_key, "fmt": "json", "limit": min(limit, 50)},
             )
             r.raise_for_status()
             data = r.json()
@@ -309,36 +336,33 @@ def fetch_news_for_ticker(symbol: str, limit: int = 10) -> dict[str, Any]:
     with _lock:
         _last_request_time = time.monotonic()
 
-    if not isinstance(data, dict):
-        return out
-    if "Error Message" in data:
-        out["message"] = data["Error Message"]
-        return out
-    if "Note" in data:
-        note = data["Note"]
-        if _is_rate_limit_error(note):
-            out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
-        else:
-            out["message"] = note
+    if not isinstance(data, list):
         return out
 
-    feed = data.get("feed") or []
     items: list[dict[str, Any]] = []
-    for entry in feed[:limit]:
+    for entry in data[:limit]:
         if not isinstance(entry, dict):
             continue
         title = (entry.get("title") or "").strip()
         if not title:
             continue
-        url = (entry.get("url") or "").strip() or None
-        time_pub = entry.get("time_published")  # e.g. 20240306T120000
-        time_str = str(time_pub)[:16] if time_pub else None
-        source = (entry.get("source") or "").strip() or None
+        url = (entry.get("link") or "").strip() or None
+        time_pub = entry.get("date")
+        time_str = str(time_pub)[:19] if time_pub else None
+        source = None
+        sent = entry.get("sentiment")
         sentiment = None
-        if isinstance(entry.get("overall_sentiment_score"), (int, float)):
-            sentiment = str(round(float(entry["overall_sentiment_score"]), 2))
-        elif isinstance(entry.get("overall_sentiment_label"), str) and entry["overall_sentiment_label"]:
-            sentiment = entry["overall_sentiment_label"]
+        if isinstance(sent, dict) and "polarity" in sent:
+            try:
+                p = float(sent["polarity"])
+                if p > 0.1:
+                    sentiment = "positive"
+                elif p < -0.1:
+                    sentiment = "negative"
+                else:
+                    sentiment = "neutral"
+            except (TypeError, ValueError):
+                pass
         items.append({
             "title": title,
             "url": url,
@@ -417,9 +441,9 @@ def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
         "quarterly_revenue_growth_yoy": None,
         "message": None,
     }
-    api_key = (settings.alpha_vantage_api_key or "").strip()
+    api_key = (getattr(settings, "eodhd_api_key", "") or "").strip()
     if not api_key:
-        out["message"] = "Alpha Vantage API key not set. Add ALPHA_VANTAGE_API_KEY to .env"
+        out["message"] = "EODHD API key not set. Add EODHD_API_KEY to .env"
         return out
 
     try:
@@ -428,33 +452,42 @@ def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
         out["message"] = "httpx not installed"
         return out
 
+    eodhd_symbol = _to_eodhd_symbol(symbol)
+    end_date = dt.date.today()
+    start_date = end_date - dt.timedelta(days=months * 31)
+
     try:
         with httpx.Client(timeout=30.0) as client:
-            # 1) Daily time series: compact = last 100 days; full = 20+ years (use full when we need >100 days)
-            num_bars = months * TRADING_DAYS_PER_MONTH
-            daily_params = {
-                "function": "TIME_SERIES_DAILY",
-                "symbol": symbol,
-                "apikey": api_key,
-                "outputsize": "full" if num_bars > 100 else "compact",
-            }
-            r_daily = client.get(BASE_URL, params=daily_params)
-            r_daily.raise_for_status()
-            data_daily = r_daily.json()
+            # 1) EOD historical prices
+            r_eod = client.get(
+                f"{BASE_URL}/eod/{eodhd_symbol}",
+                params={
+                    "api_token": api_key,
+                    "fmt": "json",
+                    "from": start_date.isoformat(),
+                    "to": end_date.isoformat(),
+                },
+            )
+            r_eod.raise_for_status()
+            data_eod = r_eod.json()
 
-            if "Time Series (Daily)" in data_daily:
-                series = data_daily["Time Series (Daily)"]
-                for date_str, day in sorted(series.items(), reverse=True)[:num_bars]:
+            if isinstance(data_eod, list):
+                for day in data_eod:
+                    if not isinstance(day, dict):
+                        continue
                     try:
-                        open_ = float(day.get("1. open", 0))
-                        high = float(day.get("2. high", 0))
-                        low = float(day.get("3. low", 0))
-                        close = float(day.get("4. close", 0))
-                        vol = int(float(day.get("5. volume", 0)))
+                        date_str = (day.get("date") or "")[:10]
+                        # Use adjusted_close (split/dividend adjusted) when available for correct charts across splits
+                        adj = day.get("adjusted_close")
+                        close = float(adj) if adj not in (None, "", "-") else float(day.get("close", 0))
+                        open_ = float(day.get("open", 0))
+                        high = float(day.get("high", 0))
+                        low = float(day.get("low", 0))
+                        vol = int(float(day.get("volume", 0)))
                     except (TypeError, ValueError):
                         continue
                     out["prices"].append({
-                        "date": date_str[:10],
+                        "date": date_str,
                         "open": round(open_, 4),
                         "high": round(high, 4),
                         "low": round(low, 4),
@@ -463,30 +496,23 @@ def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
                     })
                 out["prices"].sort(key=lambda x: x["date"])
                 _add_indicators(out["prices"])
-            elif "Error Message" in data_daily:
-                out["message"] = data_daily["Error Message"]
-                return out
-            elif "Note" in data_daily:
-                out["message"] = data_daily["Note"]
-                if _is_rate_limit_error(out["message"]):
-                    out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
-                return out
+            elif isinstance(data_eod, dict) and data_eod.get("errors"):
+                out["message"] = str(data_eod.get("errors", "Unknown error"))
 
-            # 2) Overview for PE ratios
-            overview_params = {
-                "function": "OVERVIEW",
-                "symbol": symbol,
-                "apikey": api_key,
-            }
-            r_overview = client.get(BASE_URL, params=overview_params)
-            r_overview.raise_for_status()
-            data_overview = r_overview.json()
+            # 2) Fundamentals for PE ratios and growth
+            r_fund = client.get(
+                f"{BASE_URL}/fundamentals/{eodhd_symbol}",
+                params={"api_token": api_key, "fmt": "json"},
+            )
+            r_fund.raise_for_status()
+            data_fund = r_fund.json()
 
-            if isinstance(data_overview, dict) and "Symbol" in data_overview:
-                # Skip if response is rate-limit note or error (no Symbol)
-                def _safe_float(*keys: str):
+            if isinstance(data_fund, dict):
+                def _safe_float(obj: dict | None, *keys: str):
+                    if not obj:
+                        return None
                     for k in keys:
-                        v = data_overview.get(k)
+                        v = obj.get(k)
                         if v in (None, "", "None", "-"):
                             continue
                         try:
@@ -494,29 +520,109 @@ def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
                         except (TypeError, ValueError):
                             continue
                     return None
-                out["trailing_pe"] = _safe_float("PERatio", "PE Ratio", "TrailingPE")
-                out["forward_pe"] = _safe_float("ForwardPE", "Forward PE", "Forward P/E")
-                out["peg_ratio"] = _safe_float("PEGRatio", "PEG Ratio", "PEG")
-                out["ev_to_ebitda"] = _safe_float("EVToEBITDA", "EV/EBITDA")
-                # Earnings/revenue growth: API returns decimal (e.g. 0.9 = 90%). Store as percentage.
-                qeg = _safe_float("QuarterlyEarningsGrowthYOY")
+
+                def _safe_int(obj: dict | None, *keys: str):
+                    if not obj:
+                        return None
+                    for k in keys:
+                        v = obj.get(k)
+                        if v in (None, "", "None", "-"):
+                            continue
+                        try:
+                            return int(float(v))
+                        except (TypeError, ValueError):
+                            continue
+                    return None
+
+                val = data_fund.get("Valuation") or {}
+                hl = data_fund.get("Highlights") or {}
+                tech = data_fund.get("Technicals") or {}
+                ar = data_fund.get("AnalystRatings") or {}
+                vg = data_fund.get("Valuations_Growth") or {}
+                vrp = vg.get("Valuations_Rates_Portfolio") if isinstance(vg, dict) else {}
+                out["trailing_pe"] = _safe_float(val, "TrailingPE") or _safe_float(hl, "PERatio")
+                out["forward_pe"] = _safe_float(val, "ForwardPE")
+                if out["forward_pe"] is None:
+                    # For ETFs and other instruments where ForwardPE is often missing,
+                    # first fall back to Valuations_Growth.Valuations_Rates_Portfolio["Price/Prospective Earnings"]
+                    # from the same fundamentals payload, then (legacy) database table when available.
+                    if isinstance(vrp, dict):
+                        alt_forward = _safe_float(vrp, "Price/Prospective Earnings")
+                        if alt_forward is not None:
+                            out["forward_pe"] = alt_forward
+                    if out["forward_pe"] is None:
+                        alt_forward = _lookup_forward_pe_from_portfolio(symbol)
+                        if alt_forward is not None:
+                            out["forward_pe"] = alt_forward
+                out["peg_ratio"] = _safe_float(hl, "PEGRatio")
+                out["ev_to_ebitda"] = _safe_float(val, "EnterpriseValueEbitda")
+                qeg = _safe_float(hl, "QuarterlyEarningsGrowthYOY")
                 if qeg is not None and abs(qeg) <= 2:
                     out["quarterly_earnings_growth_yoy"] = round(qeg * 100, 1)
                 else:
                     out["quarterly_earnings_growth_yoy"] = qeg
-                qrg = _safe_float("QuarterlyRevenueGrowthYOY")
+                qrg = _safe_float(hl, "QuarterlyRevenueGrowthYOY")
                 if qrg is not None and abs(qrg) <= 2:
                     out["quarterly_revenue_growth_yoy"] = round(qrg * 100, 1)
                 else:
                     out["quarterly_revenue_growth_yoy"] = qrg
-            if "Error Message" in (data_overview or {}):
-                msg = (data_overview or {}).get("Error Message", "")
-                if not out["message"]:
-                    out["message"] = msg
-            if "Note" in (data_overview or {}):
-                note = (data_overview or {}).get("Note", "")
-                if _is_rate_limit_error(note) and not out["message"]:
-                    out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
+
+                # Analyst ratings (TargetPrice, StrongBuy, Buy, Hold, Sell, StrongSell)
+                out["analyst_target_price"] = _safe_float(ar, "TargetPrice")
+                out["analyst_strong_buy"] = _safe_int(ar, "StrongBuy")
+                out["analyst_buy"] = _safe_int(ar, "Buy")
+                out["analyst_hold"] = _safe_int(ar, "Hold")
+                out["analyst_sell"] = _safe_int(ar, "Sell")
+                out["analyst_strong_sell"] = _safe_int(ar, "StrongSell")
+
+                # Earnings.Trend: earningsEstimateGrowth for 0y (current FY) and +1y (next FY).
+                # Trend is keyed by fiscal year-end date; multiple 0y/+1y exist (one per year).
+                # Pick the forward-looking ones: smallest date >= today for each period.
+                earnings = data_fund.get("Earnings") or {}
+                trend = earnings.get("Trend") or {}
+                if isinstance(trend, dict):
+                    today_str = end_date.isoformat()
+                    candidates_0y: list[tuple[str, float]] = []
+                    candidates_1y: list[tuple[str, float]] = []
+                    for date_str, entry in trend.items():
+                        if not isinstance(entry, dict):
+                            continue
+                        period = entry.get("period")
+                        growth = entry.get("earningsEstimateGrowth")
+                        if growth is None or period is None:
+                            continue
+                        try:
+                            g = float(growth)
+                            if period == "0y" and (date_str or "") >= today_str:
+                                candidates_0y.append((date_str, g))
+                            elif period == "+1y" and (date_str or "") >= today_str:
+                                candidates_1y.append((date_str, g))
+                        except (TypeError, ValueError):
+                            continue
+                    # Use earliest future date (current/next FY)
+                    eps_growth_0y = round(min(candidates_0y)[1] * 100, 1) if candidates_0y else None
+                    eps_growth_1y = round(min(candidates_1y)[1] * 100, 1) if candidates_1y else None
+                    out["eps_growth_0y_pct"] = eps_growth_0y
+                    out["eps_growth_1y_pct"] = eps_growth_1y
+
+                # Highlights.DilutedEpsTTM for trailing 12M EPS (USD)
+                out["trailing_12m_eps"] = _safe_float(hl, "DilutedEpsTTM")
+
+                # Valuation extras for analyst-style evaluation
+                out["price_sales_ttm"] = _safe_float(val, "PriceSalesTTM")
+                out["price_book_mrq"] = _safe_float(val, "PriceBookMRQ")
+                out["enterprise_value_ebitda"] = _safe_float(val, "EnterpriseValueEbitda")
+                out["week_52_high"] = _safe_float(tech, "52WeekHigh")
+                out["week_52_low"] = _safe_float(tech, "52WeekLow")
+                out["return_on_equity_ttm"] = _safe_float(hl, "ReturnOnEquityTTM")
+                if out["return_on_equity_ttm"] is not None and abs(out["return_on_equity_ttm"]) <= 2:
+                    out["return_on_equity_ttm"] = round(out["return_on_equity_ttm"] * 100, 1)
+                out["operating_margin_ttm"] = _safe_float(hl, "OperatingMarginTTM")
+                if out["operating_margin_ttm"] is not None and abs(out["operating_margin_ttm"]) <= 2:
+                    out["operating_margin_ttm"] = round(out["operating_margin_ttm"] * 100, 1)
+                out["profit_margin"] = _safe_float(hl, "ProfitMargin")
+                if out["profit_margin"] is not None and abs(out["profit_margin"]) <= 2:
+                    out["profit_margin"] = round(out["profit_margin"] * 100, 1)
     except httpx.HTTPStatusError as e:
         out["message"] = f"HTTP {e.response.status_code}"
     except Exception as e:
@@ -528,8 +634,8 @@ def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
 
 def get_earnings_estimates(symbol: str) -> dict[str, Any]:
     """
-    Fetch EARNINGS_ESTIMATES for a symbol. Returns next fiscal year eps_estimate_average
-    and 30-day revision counts (up/down). Cached (see alpha_vantage_cache_ttl_seconds); uses same throttle as other AV calls.
+    Fetch next fiscal year EPS estimate from EODHD fundamentals (Highlights.EPSEstimateNextYear).
+    EODHD does not provide revision counts; eps_revision_up_30d/eps_revision_down_30d remain None.
     """
     global _last_request_time
     symbol = (symbol or "").strip().upper()
@@ -543,9 +649,9 @@ def get_earnings_estimates(symbol: str) -> dict[str, Any]:
         out["message"] = "Symbol required."
         return out
 
-    api_key = (settings.alpha_vantage_api_key or "").strip()
+    api_key = (getattr(settings, "eodhd_api_key", "") or "").strip()
     if not api_key:
-        out["message"] = "Alpha Vantage API key not set."
+        out["message"] = "EODHD API key not set."
         return out
 
     now = time.monotonic()
@@ -566,11 +672,12 @@ def get_earnings_estimates(symbol: str) -> dict[str, Any]:
         out["message"] = "httpx not installed"
         return out
 
+    eodhd_symbol = _to_eodhd_symbol(symbol)
     try:
         with httpx.Client(timeout=30.0) as client:
             r = client.get(
-                BASE_URL,
-                params={"function": "EARNINGS_ESTIMATES", "symbol": symbol, "apikey": api_key},
+                f"{BASE_URL}/fundamentals/{eodhd_symbol}",
+                params={"api_token": api_key, "fmt": "json"},
             )
             r.raise_for_status()
             data = r.json()
@@ -580,32 +687,14 @@ def get_earnings_estimates(symbol: str) -> dict[str, Any]:
             out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
         return out
 
-    if isinstance(data, dict) and "estimates" in data:
-        estimates = data.get("estimates") or []
-        for est in estimates:
-            if not isinstance(est, dict):
-                continue
-            horizon = (est.get("horizon") or "").strip().lower()
-            if horizon == "next fiscal year":
-                try:
-                    avg = est.get("eps_estimate_average")
-                    if avg not in (None, "", "-"):
-                        out["next_fy_eps_estimate"] = round(float(avg), 4)
-                except (TypeError, ValueError):
-                    pass
-                for key, out_key in (
-                    ("eps_estimate_revision_up_trailing_30_days", "eps_revision_up_30d"),
-                    ("eps_estimate_revision_down_trailing_30_days", "eps_revision_down_30d"),
-                ):
-                    val = est.get(key)
-                    if val is not None and val != "" and val != "-":
-                        try:
-                            out[out_key] = int(float(val))
-                        except (TypeError, ValueError):
-                            pass
-                break
-    elif isinstance(data, dict) and "Note" in data:
-        out["message"] = data.get("Note", "")
+    if isinstance(data, dict):
+        hl = data.get("Highlights") or {}
+        eps_next = hl.get("EPSEstimateNextYear")
+        if eps_next not in (None, "", "-"):
+            try:
+                out["next_fy_eps_estimate"] = round(float(eps_next), 4)
+            except (TypeError, ValueError):
+                pass
 
     with _lock:
         _last_request_time = time.monotonic()
@@ -616,9 +705,8 @@ def get_earnings_estimates(symbol: str) -> dict[str, Any]:
 
 def get_earnings(symbol: str) -> dict[str, Any]:
     """
-    Fetch EARNINGS (reported history) for a symbol. Returns trailing_12m_eps (sum of last 4 quarters)
-    and quarterly_earnings list [{reportedDate, reportedEPS, fiscalDateEnding}] for historical PE.
-    Cached (see alpha_vantage_cache_ttl_seconds); uses same throttle.
+    Fetch reported earnings from EODHD fundamentals (Earnings.History).
+    Returns trailing_12m_eps (sum of last 4 quarters) and quarterly_earnings list.
     """
     global _last_request_time
     symbol = (symbol or "").strip().upper()
@@ -630,9 +718,10 @@ def get_earnings(symbol: str) -> dict[str, Any]:
     if not symbol:
         out["message"] = "Symbol required."
         return out
-    api_key = (settings.alpha_vantage_api_key or "").strip()
+
+    api_key = (getattr(settings, "eodhd_api_key", "") or "").strip()
     if not api_key:
-        out["message"] = "Alpha Vantage API key not set."
+        out["message"] = "EODHD API key not set."
         return out
 
     now = time.monotonic()
@@ -653,9 +742,13 @@ def get_earnings(symbol: str) -> dict[str, Any]:
         out["message"] = "httpx not installed"
         return out
 
+    eodhd_symbol = _to_eodhd_symbol(symbol)
     try:
         with httpx.Client(timeout=30.0) as client:
-            r = client.get(BASE_URL, params={"function": "EARNINGS", "symbol": symbol, "apikey": api_key})
+            r = client.get(
+                f"{BASE_URL}/fundamentals/{eodhd_symbol}",
+                params={"api_token": api_key, "fmt": "json"},
+            )
             r.raise_for_status()
             data = r.json()
     except Exception as e:
@@ -664,9 +757,16 @@ def get_earnings(symbol: str) -> dict[str, Any]:
             out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
         return out
 
-    if not isinstance(data, dict) or "quarterlyEarnings" not in data:
-        if isinstance(data, dict) and "Note" in data:
-            out["message"] = data.get("Note", "")
+    if not isinstance(data, dict):
+        with _lock:
+            _last_request_time = time.monotonic()
+            if not _is_rate_limit_error(out.get("message") or ""):
+                _EARNINGS_CACHE[symbol] = (_last_request_time, out)
+        return out
+
+    earnings = data.get("Earnings") or {}
+    history = earnings.get("History") or {}
+    if not isinstance(history, dict):
         with _lock:
             _last_request_time = time.monotonic()
             if not _is_rate_limit_error(out.get("message") or ""):
@@ -674,17 +774,23 @@ def get_earnings(symbol: str) -> dict[str, Any]:
         return out
 
     quarters = []
-    for q in data.get("quarterlyEarnings") or []:
+    for fiscal_date, q in history.items():
         if not isinstance(q, dict):
             continue
+        eps = q.get("epsActual")
+        if eps in (None, "", "-"):
+            continue
         try:
-            rd = (q.get("reportedDate") or "")[:10]
-            eps = q.get("reportedEPS")
-            fd = (q.get("fiscalDateEnding") or "")[:10]
-            if rd and eps not in (None, "", "-"):
-                quarters.append({"reportedDate": rd, "reportedEPS": float(eps), "fiscalDateEnding": fd})
+            report_date = (q.get("reportDate") or fiscal_date or "")[:10]
+            eps_val = float(eps)
+            quarters.append({
+                "reportedDate": report_date,
+                "reportedEPS": eps_val,
+                "fiscalDateEnding": (str(fiscal_date))[:10],
+            })
         except (TypeError, ValueError):
             continue
+
     quarters.sort(key=lambda x: x["reportedDate"], reverse=True)
     out["quarterly_earnings"] = quarters
     if len(quarters) >= 4:
@@ -700,8 +806,6 @@ def get_earnings(symbol: str) -> dict[str, Any]:
 def get_eps_growth(symbol: str) -> dict[str, Any]:
     """
     EPS growth % = (next fiscal year EPS estimate - trailing 12M EPS) / trailing 12M EPS * 100.
-    Next FY from EARNINGS_ESTIMATES (eps_estimate_average, horizon "next fiscal year").
-    Trailing 12M = sum of last 4 reported quarters from EARNINGS.
     """
     est = get_earnings_estimates(symbol)
     earn = get_earnings(symbol)
@@ -722,16 +826,13 @@ def get_eps_growth(symbol: str) -> dict[str, Any]:
     return out
 
 
-# Lookback for PE percentile: always use 5 years so percentile is relative to 5-year history, not chart range
 PE_PERCENTILE_LOOKBACK_MONTHS = 60
 
 
 def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
     """
-    Build historical trailing P/E: for each trading day, trailing_12m_eps = sum of
-    last 4 reported quarters as of that date; PE = close / trailing_12m_eps.
+    Build historical trailing P/E from EODHD prices and Earnings.History.
     Returns series (date, pe, close, trailing_12m_eps), current_pe, pe_percentile.
-    PE percentile is computed relative to the past 5 years, not just the chart range.
     """
     global _last_request_time
     symbol = (symbol or "").strip().upper()
@@ -746,12 +847,11 @@ def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
         out["message"] = "Symbol required."
         return out
 
-    api_key = (settings.alpha_vantage_api_key or "").strip()
+    api_key = (getattr(settings, "eodhd_api_key", "") or "").strip()
     if not api_key:
-        out["message"] = "Alpha Vantage API key not set."
+        out["message"] = "EODHD API key not set."
         return out
 
-    # Fetch 5 years of prices for PE percentile baseline (so percentile is vs 5-year history)
     prices_data = get_prices_and_valuation(symbol, months=PE_PERCENTILE_LOOKBACK_MONTHS)
     all_prices = prices_data.get("prices") or []
     earn = get_earnings(symbol)
@@ -760,7 +860,6 @@ def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
         out["message"] = prices_data.get("message") or earn.get("message") or "No price or earnings data."
         return out
 
-    # For each trading day d: trailing_12m_eps(d) = sum of reportedEPS for 4 most recent quarters with reportedDate <= d
     q_sorted_by_date = sorted(quarters, key=lambda x: x["reportedDate"])
     full_series: list[dict[str, Any]] = []
     for p in all_prices:
@@ -781,12 +880,10 @@ def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
         out["message"] = "Could not build PE series (insufficient quarters vs price dates)."
         return out
 
-    # Chart series: last ~months of calendar time (by trading days)
     num_bars = months * TRADING_DAYS_PER_MONTH
     out["series"] = full_series[-num_bars:] if num_bars < len(full_series) else full_series
     current = full_series[-1]
     out["current_pe"] = current["pe"]
-    # PE percentile vs past 5 years (full_series), not just chart range
     pes_5y = [x["pe"] for x in full_series]
     n_below = sum(1 for pe in pes_5y if pe < current["pe"])
     out["pe_percentile"] = round(n_below / len(pes_5y) * 100, 1) if pes_5y else None
@@ -795,21 +892,34 @@ def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
 
 def get_prices_and_valuation(symbol: str, months: int = 6) -> dict[str, Any]:
     """
-    Fetch OHLCV history and valuation for a ticker using Alpha Vantage.
-    Cached (see alpha_vantage_cache_ttl_seconds); requests throttled (alpha_vantage_min_seconds_between_requests).
+    Fetch OHLCV history and valuation for a ticker using EODHD.
+    Cached; requests throttled.
     """
     global _last_request_time
     symbol = (symbol or "").strip().upper()
     if not symbol:
-        return {"symbol": "", "prices": [], "trailing_pe": None, "forward_pe": None, "peg_ratio": None, "ev_to_ebitda": None, "message": "Symbol required."}
+        return {
+            "symbol": "",
+            "prices": [],
+            "trailing_pe": None,
+            "forward_pe": None,
+            "peg_ratio": None,
+            "ev_to_ebitda": None,
+            "message": "Symbol required.",
+        }
 
     key = (symbol, months)
     now = time.monotonic()
     with _lock:
         if key in _CACHE:
             cached_at, result = _CACHE[key]
-            if now - cached_at < _cache_ttl_seconds():
-                return result
+            # If the cached result has a non-null forward_pe, return it as usual.
+            # If forward_pe is missing/null (e.g. older cache before ETF fallback was added),
+            # treat the entry as stale so we refetch once and populate forward_pe.
+            if isinstance(result, dict) and result.get("forward_pe") is not None:
+                if now - cached_at < _cache_ttl_seconds():
+                    return result
+            # Stale or expired: drop from cache and proceed to live fetch.
             del _CACHE[key]
 
         elapsed = now - _last_request_time

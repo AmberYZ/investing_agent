@@ -20,10 +20,16 @@ type BasketItem = {
   pct_3m?: number | null;
   pct_ytd?: number | null;
   pct_6m?: number | null;
-  next_fy_eps_estimate?: number | null;
-  eps_revision_up_30d?: number | null;
-  eps_revision_down_30d?: number | null;
-  eps_growth_pct?: number | null;
+  analyst_target_price?: number | null;
+  analyst_strong_buy?: number | null;
+  analyst_buy?: number | null;
+  analyst_hold?: number | null;
+  analyst_sell?: number | null;
+  analyst_strong_sell?: number | null;
+  eps_growth_0y_pct?: number | null;
+  eps_growth_1y_pct?: number | null;
+  price_sales_ttm?: number | null;
+  enterprise_value_ebitda?: number | null;
 };
 
 type InstrumentSummary = {
@@ -42,10 +48,16 @@ type InstrumentSummary = {
   latest_rsi?: number | null;
   quarterly_earnings_growth_yoy?: number | null;
   quarterly_revenue_growth_yoy?: number | null;
-  next_fy_eps_estimate?: number | null;
-  eps_revision_up_30d?: number | null;
-  eps_revision_down_30d?: number | null;
-  eps_growth_pct?: number | null;
+  analyst_target_price?: number | null;
+  analyst_strong_buy?: number | null;
+  analyst_buy?: number | null;
+  analyst_hold?: number | null;
+  analyst_sell?: number | null;
+  analyst_strong_sell?: number | null;
+  eps_growth_0y_pct?: number | null;
+  eps_growth_1y_pct?: number | null;
+  price_sales_ttm?: number | null;
+  enterprise_value_ebitda?: number | null;
   message?: string | null;
 };
 
@@ -61,6 +73,59 @@ type TickerDisplayRow = Omit<InstrumentSummary, "id"> & {
   theme_labels: string[];
   market_data_as_of?: string | null;
 };
+
+/** Analyst ratings visual: target price + bar scale (StrongBuy→StrongSell) */
+function AnalystRatingsVisual({
+  targetPrice,
+  strongBuy,
+  buy,
+  hold,
+  sell,
+  strongSell,
+}: {
+  targetPrice?: number | null;
+  strongBuy?: number | null;
+  buy?: number | null;
+  hold?: number | null;
+  sell?: number | null;
+  strongSell?: number | null;
+}) {
+  const total = (strongBuy ?? 0) + (buy ?? 0) + (hold ?? 0) + (sell ?? 0) + (strongSell ?? 0);
+  if (total === 0 && targetPrice == null) return <span className="text-zinc-400">—</span>;
+  const parts = [
+    { n: strongBuy ?? 0, label: "SB", color: "bg-emerald-500" },
+    { n: buy ?? 0, label: "B", color: "bg-emerald-400" },
+    { n: hold ?? 0, label: "H", color: "bg-zinc-400" },
+    { n: sell ?? 0, label: "S", color: "bg-red-400" },
+    { n: strongSell ?? 0, label: "SS", color: "bg-red-500" },
+  ];
+  return (
+    <div className="flex flex-col gap-0.5">
+      {targetPrice != null && (
+        <span className="tabular-nums text-zinc-700 dark:text-zinc-300" title="Analyst target price">
+          ${targetPrice.toFixed(1)}
+        </span>
+      )}
+      {total > 0 && (
+        <div className="flex items-center gap-0.5" title="StrongBuy / Buy / Hold / Sell / StrongSell">
+          {parts.map(({ n, label, color }) => (
+            <div key={label} className="flex items-center gap-0.5">
+              <div
+                className={`h-1.5 min-w-[2px] rounded-sm ${color}`}
+                style={{ width: total ? `${Math.max(4, (n / total) * 48)}px` : 0 }}
+              />
+              {n > 0 && (
+                <span className="text-[10px] text-zinc-500 dark:text-zinc-400" title={label}>
+                  {n}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function dedupeTickerRowsBySymbol(rows: BasketTickerRow[]): TickerDisplayRow[] {
   const bySymbol = new Map<string, BasketTickerRow[]>();
@@ -89,10 +154,16 @@ function dedupeTickerRowsBySymbol(rows: BasketTickerRow[]): TickerDisplayRow[] {
       latest_rsi: first.latest_rsi,
       quarterly_earnings_growth_yoy: first.quarterly_earnings_growth_yoy,
       quarterly_revenue_growth_yoy: first.quarterly_revenue_growth_yoy,
-      next_fy_eps_estimate: first.next_fy_eps_estimate,
-      eps_revision_up_30d: first.eps_revision_up_30d,
-      eps_revision_down_30d: first.eps_revision_down_30d,
-      eps_growth_pct: first.eps_growth_pct,
+      analyst_target_price: first.analyst_target_price,
+      analyst_strong_buy: first.analyst_strong_buy,
+      analyst_buy: first.analyst_buy,
+      analyst_hold: first.analyst_hold,
+      analyst_sell: first.analyst_sell,
+      analyst_strong_sell: first.analyst_strong_sell,
+      eps_growth_0y_pct: first.eps_growth_0y_pct,
+      eps_growth_1y_pct: first.eps_growth_1y_pct,
+      price_sales_ttm: first.price_sales_ttm,
+      enterprise_value_ebitda: first.enterprise_value_ebitda,
       message: first.message,
       market_data_as_of: first.market_data_as_of,
       theme_ids,
@@ -411,11 +482,10 @@ function ThemeSection({
                       <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">YTD</th>
                       <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">Fwd PE</th>
                       <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">PEG</th>
-                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">Next FY EPS</th>
-                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="Revisions up (30d)">Rev ↑</th>
-                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="Revisions down (30d)">Rev ↓</th>
-                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="(Next FY EPS estimate − sum of last 4 reported quarters) / sum of last 4 reported × 100">EPS gr%</th>
-                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="From OVERVIEW: quarterly earnings growth year-over-year.">Qtr EPS YoY %</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="Analyst target price & ratings">Analyst</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="EPS growth 0y / +1y from Earnings.Trend">EPS gr 0y/+1y</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="Price / Sales TTM">P/S</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="EV / EBITDA">EV/EBITDA</th>
                       <th className="py-2 pl-2 font-medium text-zinc-600 dark:text-zinc-400">RSI</th>
                     </tr>
                   </thead>
@@ -447,24 +517,32 @@ function ThemeSection({
                         <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
                           {fmtNum(t.peg_ratio)}
                         </td>
-                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
-                          {t.next_fy_eps_estimate != null ? String(t.next_fy_eps_estimate) : "—"}
+                        <td className="py-2 px-2">
+                          <AnalystRatingsVisual
+                            targetPrice={t.analyst_target_price}
+                            strongBuy={t.analyst_strong_buy}
+                            buy={t.analyst_buy}
+                            hold={t.analyst_hold}
+                            sell={t.analyst_sell}
+                            strongSell={t.analyst_strong_sell}
+                          />
                         </td>
-                        <td className="py-2 px-2 tabular-nums text-emerald-600 dark:text-emerald-400">
-                          {t.eps_revision_up_30d != null ? String(t.eps_revision_up_30d) : "—"}
-                        </td>
-                        <td className="py-2 px-2 tabular-nums text-red-600 dark:text-red-400">
-                          {t.eps_revision_down_30d != null ? String(t.eps_revision_down_30d) : "—"}
-                        </td>
-                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
-                          {t.eps_growth_pct != null ? (
-                            <span title="(Next FY EPS estimate − sum of last 4 reported) / sum of last 4 reported × 100">{t.eps_growth_pct}%</span>
+                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400" title="0y / +1y earningsEstimateGrowth from Earnings.Trend">
+                          {t.eps_growth_0y_pct != null || t.eps_growth_1y_pct != null ? (
+                            <span>
+                              {t.eps_growth_0y_pct != null ? `${t.eps_growth_0y_pct.toFixed(1)}%` : "—"}
+                              {" / "}
+                              {t.eps_growth_1y_pct != null ? `${t.eps_growth_1y_pct.toFixed(1)}%` : "—"}
+                            </span>
                           ) : (
                             "—"
                           )}
                         </td>
                         <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
-                          {t.quarterly_earnings_growth_yoy != null ? `${t.quarterly_earnings_growth_yoy}%` : "—"}
+                          {fmtNum(t.price_sales_ttm)}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
+                          {fmtNum(t.enterprise_value_ebitda)}
                         </td>
                         <td className="py-2 pl-2 tabular-nums text-zinc-600 dark:text-zinc-400">
                           {fmtNum(t.latest_rsi)}
@@ -537,10 +615,16 @@ export default function BasketPage() {
                           pct_6m: metrics.pct_6m ?? it.pct_6m,
                           quarterly_earnings_growth_yoy: metrics.quarterly_earnings_growth_yoy ?? it.quarterly_earnings_growth_yoy,
                           quarterly_revenue_growth_yoy: metrics.quarterly_revenue_growth_yoy ?? it.quarterly_revenue_growth_yoy,
-                          next_fy_eps_estimate: metrics.next_fy_eps_estimate ?? it.next_fy_eps_estimate,
-                          eps_revision_up_30d: metrics.eps_revision_up_30d ?? it.eps_revision_up_30d,
-                          eps_revision_down_30d: metrics.eps_revision_down_30d ?? it.eps_revision_down_30d,
-                          eps_growth_pct: metrics.eps_growth_pct ?? it.eps_growth_pct,
+                          analyst_target_price: metrics.analyst_target_price ?? it.analyst_target_price,
+                          analyst_strong_buy: metrics.analyst_strong_buy ?? it.analyst_strong_buy,
+                          analyst_buy: metrics.analyst_buy ?? it.analyst_buy,
+                          analyst_hold: metrics.analyst_hold ?? it.analyst_hold,
+                          analyst_sell: metrics.analyst_sell ?? it.analyst_sell,
+                          analyst_strong_sell: metrics.analyst_strong_sell ?? it.analyst_strong_sell,
+                          eps_growth_0y_pct: metrics.eps_growth_0y_pct ?? it.eps_growth_0y_pct,
+                          eps_growth_1y_pct: metrics.eps_growth_1y_pct ?? it.eps_growth_1y_pct,
+                          price_sales_ttm: metrics.price_sales_ttm ?? it.price_sales_ttm,
+                          enterprise_value_ebitda: metrics.enterprise_value_ebitda ?? it.enterprise_value_ebitda,
                         }
                       : it
                   )
@@ -605,10 +689,16 @@ export default function BasketPage() {
                   latest_rsi: inv.latest_rsi,
                   quarterly_earnings_growth_yoy: inv.quarterly_earnings_growth_yoy,
                   quarterly_revenue_growth_yoy: inv.quarterly_revenue_growth_yoy,
-                  next_fy_eps_estimate: inv.next_fy_eps_estimate,
-                  eps_revision_up_30d: inv.eps_revision_up_30d,
-                  eps_revision_down_30d: inv.eps_revision_down_30d,
-                  eps_growth_pct: inv.eps_growth_pct,
+                  analyst_target_price: inv.analyst_target_price,
+                  analyst_strong_buy: inv.analyst_strong_buy,
+                  analyst_buy: inv.analyst_buy,
+                  analyst_hold: inv.analyst_hold,
+                  analyst_sell: inv.analyst_sell,
+                  analyst_strong_sell: inv.analyst_strong_sell,
+                  eps_growth_0y_pct: inv.eps_growth_0y_pct,
+                  eps_growth_1y_pct: inv.eps_growth_1y_pct,
+                  price_sales_ttm: inv.price_sales_ttm,
+                  enterprise_value_ebitda: inv.enterprise_value_ebitda,
                   message: inv.message,
                 };
               })
@@ -835,11 +925,10 @@ export default function BasketPage() {
                       <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">YTD</th>
                       <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">Fwd PE</th>
                       <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">PEG</th>
-                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">Next FY EPS</th>
-                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="Revisions up (30d)">Rev ↑</th>
-                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="Revisions down (30d)">Rev ↓</th>
-                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="(Next FY EPS estimate − sum of last 4 reported quarters) / sum of last 4 reported × 100">EPS gr%</th>
-                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="From OVERVIEW: quarterly earnings growth year-over-year.">Qtr EPS YoY %</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="Analyst target price & ratings">Analyst</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400" title="EPS growth 0y / +1y from Earnings.Trend">EPS gr 0y/+1y</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">P/S</th>
+                      <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">EV/EBITDA</th>
                       <th className="py-2 px-2 font-medium text-zinc-600 dark:text-zinc-400">RSI</th>
                       <th className="py-2 pl-3 font-medium text-zinc-600 dark:text-zinc-400">Theme</th>
                     </tr>
@@ -868,24 +957,32 @@ export default function BasketPage() {
                         <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
                           {fmtNum(t.peg_ratio)}
                         </td>
+                        <td className="py-2 px-2">
+                          <AnalystRatingsVisual
+                            targetPrice={t.analyst_target_price}
+                            strongBuy={t.analyst_strong_buy}
+                            buy={t.analyst_buy}
+                            hold={t.analyst_hold}
+                            sell={t.analyst_sell}
+                            strongSell={t.analyst_strong_sell}
+                          />
+                        </td>
                         <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
-                          {t.next_fy_eps_estimate != null ? String(t.next_fy_eps_estimate) : "—"}
-                        </td>
-                        <td className="py-2 px-2 tabular-nums text-emerald-600 dark:text-emerald-400">
-                          {t.eps_revision_up_30d != null ? String(t.eps_revision_up_30d) : "—"}
-                        </td>
-                        <td className="py-2 px-2 tabular-nums text-red-600 dark:text-red-400">
-                          {t.eps_revision_down_30d != null ? String(t.eps_revision_down_30d) : "—"}
-                        </td>
-                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
-                          {t.eps_growth_pct != null ? (
-                            <span title="(Next FY EPS estimate − sum of last 4 reported) / sum of last 4 reported × 100">{t.eps_growth_pct}%</span>
+                          {t.eps_growth_0y_pct != null || t.eps_growth_1y_pct != null ? (
+                            <span title="0y / +1y from Earnings.Trend earningsEstimateGrowth">
+                              {t.eps_growth_0y_pct != null ? `${t.eps_growth_0y_pct}%` : "—"}
+                              {" / "}
+                              {t.eps_growth_1y_pct != null ? `${t.eps_growth_1y_pct}%` : "—"}
+                            </span>
                           ) : (
                             "—"
                           )}
                         </td>
                         <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
-                          {t.quarterly_earnings_growth_yoy != null ? `${t.quarterly_earnings_growth_yoy}%` : "—"}
+                          {fmtNum(t.price_sales_ttm)}
+                        </td>
+                        <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
+                          {fmtNum(t.enterprise_value_ebitda)}
                         </td>
                         <td className="py-2 px-2 tabular-nums text-zinc-600 dark:text-zinc-400">
                           {fmtNum(t.latest_rsi)}

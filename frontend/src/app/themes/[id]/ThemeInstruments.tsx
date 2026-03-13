@@ -17,6 +17,8 @@ import {
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 const PRICE_CACHE_TTL_MS = 14 * 60 * 1000; // 14 min; match backend cache so refresh doesn't refetch
 const QUOTE_STORAGE_KEY = "investing_quote";
+/** Bump when API response schema changes (e.g. new metrics) to invalidate stale sessionStorage. */
+const QUOTE_CACHE_VERSION = 2;
 
 type ThemeInstrument = {
   id: number;
@@ -79,21 +81,29 @@ type InstrumentQuote = {
   forward_pe?: number | null;
   peg_ratio?: number | null;
   ev_to_ebitda?: number | null;
-  next_fy_eps_estimate?: number | null;
-  eps_revision_up_30d?: number | null;
-  eps_revision_down_30d?: number | null;
-  eps_growth_pct?: number | null;
+  analyst_target_price?: number | null;
+  analyst_strong_buy?: number | null;
+  analyst_buy?: number | null;
+  analyst_hold?: number | null;
+  analyst_sell?: number | null;
+  analyst_strong_sell?: number | null;
+  eps_growth_0y_pct?: number | null;
+  eps_growth_1y_pct?: number | null;
+  price_sales_ttm?: number | null;
+  price_book_mrq?: number | null;
+  enterprise_value_ebitda?: number | null;
   message?: string | null;
 };
 
-/** Read quote from sessionStorage if present and not expired. Survives page refresh. */
+/** Read quote from sessionStorage if present, not expired, and schema version matches. Survives page refresh. */
 function getQuoteFromSessionStorage(cacheKey: string): InstrumentQuote | null {
   if (typeof window === "undefined" || !window.sessionStorage) return null;
   try {
     const raw = window.sessionStorage.getItem(`${QUOTE_STORAGE_KEY}:${cacheKey}`);
     if (!raw) return null;
-    const { data, fetchedAt } = JSON.parse(raw) as { data: InstrumentQuote; fetchedAt: number };
-    if (!data?.prices || Date.now() - fetchedAt >= PRICE_CACHE_TTL_MS) return null;
+    const parsed = JSON.parse(raw) as { data: InstrumentQuote; fetchedAt: number; version?: number };
+    const { data, fetchedAt, version } = parsed;
+    if (version !== QUOTE_CACHE_VERSION || !data?.prices || Date.now() - fetchedAt >= PRICE_CACHE_TTL_MS) return null;
     return data;
   } catch {
     return null;
@@ -106,7 +116,7 @@ function setQuoteInSessionStorage(cacheKey: string, data: InstrumentQuote): void
   try {
     window.sessionStorage.setItem(
       `${QUOTE_STORAGE_KEY}:${cacheKey}`,
-      JSON.stringify({ data, fetchedAt: Date.now() })
+      JSON.stringify({ data, fetchedAt: Date.now(), version: QUOTE_CACHE_VERSION })
     );
   } catch {
     // ignore quota or parse errors
@@ -148,6 +158,14 @@ const SOURCE_STYLES: Record<string, string> = {
   from_documents: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200 border-emerald-300 dark:border-emerald-700",
   llm_suggested: "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200 border-amber-300 dark:border-amber-700",
 };
+
+// Keep this in sync with backend RSI_PERIOD in app/market_data.py
+const RSI_PERIOD = 20;
+
+// Keep these in sync with backend MACD_FAST / MACD_SLOW / MACD_SIGNAL in app/market_data.py
+const MACD_FAST = 12;
+const MACD_SLOW = 26;
+const MACD_SIGNAL = 9;
 
 const STANCE_COLORS: Record<string, string> = {
   bullish: "#22c55e",
@@ -222,10 +240,10 @@ export function ThemeInstruments({
   const [narrativeOverlay, setNarrativeOverlay] = useState(false);
   const [narrativeConfidenceFilter, setNarrativeConfidenceFilter] = useState<"all" | "fact" | "opinion">("all");
   const [stanceData, setStanceData] = useState<ThemeMetricsByStance[]>([]);
-  const [overlaySpy, setOverlaySpy] = useState(false);
+  const [overlaySpy, setOverlaySpy] = useState(true);
   const [spyQuote, setSpyQuote] = useState<InstrumentQuote | null>(null);
   const [spyQuoteLoading, setSpyQuoteLoading] = useState(false);
-  const [overlayRsi, setOverlayRsi] = useState(true);
+  const [overlayRsi, setOverlayRsi] = useState(false);
 
   const quoteCache = useRef<Map<string, { data: InstrumentQuote; fetchedAt: number }>>(new Map());
 
@@ -247,7 +265,7 @@ export function ThemeInstruments({
     fetchInstruments().finally(() => setLoading(false));
   }, [fetchInstruments]);
 
-  // Debounced Alpha Vantage symbol search when user types in the Symbol box
+  // Debounced EODHD symbol search when user types in the Symbol box
   useEffect(() => {
     const q = addSymbol.trim();
     if (searchDebounceRef.current) {
@@ -369,9 +387,9 @@ export function ThemeInstruments({
       .finally(() => setHistPeLoading(false));
   }, [viewMode, selectedSymbol, months]);
 
-  // Fetch SPY prices when overlay is enabled (same Alpha Vantage endpoint, ticker SPY)
+  // Fetch SPY prices when overlay is enabled (same EODHD endpoint, ticker SPY)
   useEffect(() => {
-    if (!overlaySpy || viewMode !== "single") {
+    if (!overlaySpy || (viewMode !== "single" && viewMode !== "basket")) {
       setSpyQuote(null);
       return;
     }
@@ -514,59 +532,92 @@ export function ThemeInstruments({
 
   const chartData = quote?.prices ?? [];
 
-  // When overlay SPY: merged data with % return from first common date (0% = start)
-  type ChartPointWithSpy = PricePoint & { closePctReturn?: number; spyPctReturn?: number; spyClose?: number };
-  const chartDataWithSpy = useMemo((): ChartPointWithSpy[] => {
-    if (!overlaySpy || chartData.length === 0 || !spyQuote?.prices?.length) return chartData as ChartPointWithSpy[];
+  // For single-ticker view we chart a normalized index (100 = start),
+  // optionally overlaying SPY normalized the same way so the behavior
+  // matches the basket view (basket of 1).
+  type SingleIndexPoint = {
+    date: string;
+    value: number;
+    rsi_14?: number | null;
+    volume: number;
+    spyIndex?: number;
+  };
+
+  const singleIndexSeriesWithSpy = useMemo((): SingleIndexPoint[] => {
+    if (!chartData.length) return [];
+
+    // Build symbol index series (100 = first close)
+    const firstClose = chartData[0].close;
+    if (!Number.isFinite(firstClose) || firstClose <= 0) {
+      return [];
+    }
+
+    const baseSymbol = Number(firstClose);
+
+    // If SPY overlay is disabled or no SPY data yet, just return symbol index.
+    if (!overlaySpy || !spyQuote?.prices?.length) {
+      return chartData.map((p) => ({
+        date: (p.date && String(p.date)).slice(0, 10),
+        value: (p.close / baseSymbol) * 100,
+        rsi_14: p.rsi_14,
+        volume: p.volume,
+      }));
+    }
+
+    // Build SPY normalized index (100 = first SPY close on/after symbol start)
     const spyByDate = new Map<string, number>();
-    const spyDatesSorted: string[] = [];
     for (const p of spyQuote.prices) {
       const d = (p.date && String(p.date)).slice(0, 10);
-      spyByDate.set(d, p.close);
-      spyDatesSorted.push(d);
+      const c = Number(p.close);
+      if (!Number.isFinite(c)) continue;
+      spyByDate.set(d, c);
     }
-    spyDatesSorted.sort();
-    const firstChartDate = (chartData[0].date && String(chartData[0].date)).slice(0, 10);
-    // Forward-fill: use first SPY date on or after first chart date so we have a value for the start
-    let lastSpyClose: number | null = null;
-    const firstSpyDateOnOrAfter = spyDatesSorted.find((sd) => sd >= firstChartDate);
-    if (firstSpyDateOnOrAfter != null) lastSpyClose = spyByDate.get(firstSpyDateOnOrAfter) ?? null;
-    if (lastSpyClose == null && spyDatesSorted.length > 0)
-      lastSpyClose = spyByDate.get(spyDatesSorted[spyDatesSorted.length - 1]) ?? null;
+    if (!spyByDate.size) {
+      return chartData.map((p) => ({
+        date: (p.date && String(p.date)).slice(0, 10),
+        value: (p.close / baseSymbol) * 100,
+        rsi_14: p.rsi_14,
+        volume: p.volume,
+      }));
+    }
 
-    const merged: ChartPointWithSpy[] = [];
-    let baseClose: number | null = null;
-    let baseSpy: number | null = null;
+    const firstDate = (chartData[0].date && String(chartData[0].date)).slice(0, 10);
+    const firstSpyOnOrAfter = [...spyByDate.keys()].sort().find((d) => d >= firstDate) ?? null;
+    if (!firstSpyOnOrAfter) {
+      return chartData.map((p) => ({
+        date: (p.date && String(p.date)).slice(0, 10),
+        value: (p.close / baseSymbol) * 100,
+        rsi_14: p.rsi_14,
+        volume: p.volume,
+      }));
+    }
+    const baseSpy = spyByDate.get(firstSpyOnOrAfter);
+    if (baseSpy == null || baseSpy === 0) {
+      return chartData.map((p) => ({
+        date: (p.date && String(p.date)).slice(0, 10),
+        value: (p.close / baseSymbol) * 100,
+        rsi_14: p.rsi_14,
+        volume: p.volume,
+      }));
+    }
+
+    const out: SingleIndexPoint[] = [];
+    let lastSpy: number | null = baseSpy;
     for (const p of chartData) {
       const d = (p.date && String(p.date)).slice(0, 10);
-      const spyClose = spyByDate.get(d) ?? lastSpyClose;
-      if (spyClose != null) lastSpyClose = spyClose;
-      if (baseClose == null && spyClose != null) {
-        baseClose = p.close;
-        baseSpy = spyClose;
-      }
-      const closePctReturn = baseClose != null ? (p.close / baseClose - 1) * 100 : undefined;
-      const spyPctReturn = baseSpy != null && spyClose != null ? (spyClose / baseSpy - 1) * 100 : undefined;
-      merged.push({ ...p, closePctReturn, spyPctReturn, spyClose: spyClose ?? undefined });
+      const rawSpy = spyByDate.get(d);
+      if (rawSpy != null) lastSpy = rawSpy;
+      const spyIndex = lastSpy != null ? (lastSpy / baseSpy) * 100 : undefined;
+      out.push({
+        date: d,
+        value: (p.close / baseSymbol) * 100,
+        rsi_14: p.rsi_14,
+        volume: p.volume,
+        spyIndex,
+      });
     }
-    return merged;
-  }, [overlaySpy, chartData, spyQuote?.prices]);
-
-  const hasOverlayData = overlaySpy && spyQuote?.prices?.length && (chartDataWithSpy as ChartPointWithSpy[]).some((p) => p.closePctReturn != null);
-
-  // When SPY overlay is on and we have % return data, Y domain from those series only
-  const priceChartYDomain = useMemo((): [number, number] | "auto" => {
-    if (!hasOverlayData || chartDataWithSpy.length === 0) return "auto";
-    let min = Infinity;
-    let max = -Infinity;
-    for (const p of chartDataWithSpy as ChartPointWithSpy[]) {
-      if (p.closePctReturn != null) { min = Math.min(min, p.closePctReturn); max = Math.max(max, p.closePctReturn); }
-      if (p.spyPctReturn != null) { min = Math.min(min, p.spyPctReturn); max = Math.max(max, p.spyPctReturn); }
-    }
-    if (min === Infinity || max === -Infinity) return "auto";
-    const pad = Math.max((max - min) * 0.05, 0.5);
-    return [Math.floor(min - pad), Math.ceil(max + pad)];
-  }, [hasOverlayData, chartDataWithSpy]);
+    return out;
+  }, [chartData, overlaySpy, spyQuote?.prices]);
 
   const basketQuotes = useRef<Map<string, InstrumentQuote>>(new Map());
   const [basketLoading, setBasketLoading] = useState(false);
@@ -590,6 +641,38 @@ export function ThemeInstruments({
     };
     loadAll();
   }, [viewMode, dedupedInstruments, loadQuote]);
+
+  type BasketPointWithSpy = { date: string; value: number; spyIndex?: number };
+
+  const basketSeriesWithSpy = useMemo((): BasketPointWithSpy[] => {
+    if (!overlaySpy || basketSeries.length === 0 || !spyQuote?.prices?.length) return basketSeries as BasketPointWithSpy[];
+    const spyByDate = new Map<string, number>();
+    for (const p of spyQuote.prices) {
+      const d = (p.date && String(p.date)).slice(0, 10);
+      const c = Number(p.close);
+      if (!Number.isFinite(c)) continue;
+      spyByDate.set(d, c);
+    }
+    if (!spyByDate.size) return basketSeries as BasketPointWithSpy[];
+    const firstDate = basketSeries[0].date;
+    const firstSpyOnOrAfter = [...spyByDate.keys()].sort().find((d) => d >= firstDate) ?? null;
+    if (!firstSpyOnOrAfter) return basketSeries as BasketPointWithSpy[];
+    const baseSpy = spyByDate.get(firstSpyOnOrAfter);
+    if (baseSpy == null || baseSpy === 0) return basketSeries as BasketPointWithSpy[];
+    const out: BasketPointWithSpy[] = [];
+    let lastSpy: number | null = baseSpy;
+    for (const p of basketSeries) {
+      const d = (p.date && String(p.date)).slice(0, 10);
+      const rawSpy = spyByDate.get(d);
+      if (rawSpy != null) lastSpy = rawSpy;
+      const spyIndex = lastSpy != null ? (lastSpy / baseSpy) * 100 : undefined;
+      out.push({ ...p, spyIndex });
+    }
+    return out;
+  }, [overlaySpy, basketSeries, spyQuote?.prices]);
+
+  const hasBasketOverlayData =
+    overlaySpy && spyQuote?.prices?.length && (basketSeriesWithSpy as BasketPointWithSpy[]).some((p) => p.spyIndex != null);
 
   const hasInstruments = dedupedInstruments.length > 0 || suggestions.length > 0 || fromDocSuggestions.length > 0;
 
@@ -763,17 +846,68 @@ export function ThemeInstruments({
           <div className="mt-4 border-t border-zinc-200 pt-4 dark:border-zinc-800">
             {viewMode === "basket" ? (
               <>
-                <h3 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Basket performance (normalized avg)</h3>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                    Basket performance (normalized avg)
+                  </h3>
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600 dark:text-zinc-400">
+                    <label className="flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={overlaySpy}
+                        onChange={(e) => setOverlaySpy(e.target.checked)}
+                        className="rounded border-zinc-300"
+                      />
+                      <span>Overlay with SPY (100 = start)</span>
+                    </label>
+                    {overlaySpy && spyQuoteLoading && (
+                      <span className="text-[11px] text-zinc-500 dark:text-zinc-400">Loading SPY…</span>
+                    )}
+                  </div>
+                </div>
                 {basketLoading ? (
                   <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
                 ) : basketSeries.length > 0 ? (
                   <div className="mt-2 h-56 w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={basketSeries} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                      <ComposedChart data={basketSeriesWithSpy} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                         <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v) => (v && String(v).slice(5)) || v} />
                         <YAxis tick={{ fontSize: 10 }} domain={["auto", "auto"]} tickFormatter={(v) => Number(v).toFixed(0)} />
-                        <Tooltip content={({ active, payload }) => (active && payload?.[0] ? <div className="rounded border bg-white p-2 text-xs shadow dark:bg-zinc-900">{payload[0].payload.date}: {Number(payload[0].value).toFixed(1)}</div> : null)} />
-                        <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={2} dot={false} name="Basket (100 = start)" />
+                        <Tooltip
+                          content={({ active, payload }) => {
+                            if (!active || !payload?.length) return null;
+                            const p = payload[0]?.payload as BasketPointWithSpy | undefined;
+                            if (!p) return null;
+                            return (
+                              <div className="rounded border bg-white p-2 text-xs shadow dark:bg-zinc-900">
+                                <div className="font-medium">{p.date}</div>
+                                <div>Basket: {Number(p.value).toFixed(1)}</div>
+                                {overlaySpy && p.spyIndex != null && (
+                                  <div>SPY: {p.spyIndex.toFixed(1)}</div>
+                                )}
+                              </div>
+                            );
+                          }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="value"
+                          stroke="#3b82f6"
+                          strokeWidth={2}
+                          dot={false}
+                          name="Basket (100 = start)"
+                        />
+                        {overlaySpy && hasBasketOverlayData && (
+                          <Line
+                            type="monotone"
+                            dataKey="spyIndex"
+                            stroke="#f59e0b"
+                            strokeWidth={2}
+                            strokeDasharray="4 2"
+                            dot={false}
+                            name="SPY (100 = start)"
+                          />
+                        )}
                       </ComposedChart>
                     </ResponsiveContainer>
                   </div>
@@ -788,17 +922,55 @@ export function ThemeInstruments({
                     {selectedSymbol ?? "Select a ticker"}
                   </h3>
                   {quote && (
-                    <div className="flex flex-wrap gap-4 text-xs text-zinc-600 dark:text-zinc-400">
-                      {quote.trailing_pe != null && <span>Trailing P/E: <strong>{quote.trailing_pe}</strong></span>}
-                      {quote.forward_pe != null && <span>Forward P/E: <strong>{quote.forward_pe}</strong></span>}
-                      <span>PEG: <strong>{quote.peg_ratio != null ? quote.peg_ratio : "—"}</strong></span>
-                      {quote.ev_to_ebitda != null && <span>EV/EBITDA: <strong>{quote.ev_to_ebitda}</strong></span>}
-                      {quote.eps_growth_pct != null && <span>EPS growth (Fwd vs Trail 12M): <strong>{quote.eps_growth_pct}%</strong></span>}
-                      {quote.next_fy_eps_estimate != null && <span>Next FY EPS: <strong>{quote.next_fy_eps_estimate}</strong></span>}
-                      {quote.eps_revision_up_30d != null && <span className="text-emerald-600 dark:text-emerald-400">Rev ↑ 30d: <strong>{quote.eps_revision_up_30d}</strong></span>}
-                      {quote.eps_revision_down_30d != null && <span className="text-red-600 dark:text-red-400">Rev ↓ 30d: <strong>{quote.eps_revision_down_30d}</strong></span>}
+                    <div className="flex flex-wrap items-center gap-4 text-xs text-zinc-600 dark:text-zinc-400">
+                      {quote.trailing_pe != null && (
+                        <span>
+                          Trailing P/E: <strong>{quote.trailing_pe.toFixed(1)}</strong>
+                        </span>
+                      )}
+                      <span>
+                        Fwd P/E:{" "}
+                        <strong>
+                          {quote.forward_pe != null ? quote.forward_pe.toFixed(1) : "—"}
+                        </strong>
+                      </span>
+                      {quote.ev_to_ebitda != null && <span>EV/EBITDA: <strong>{quote.ev_to_ebitda.toFixed(1)}</strong></span>}
+                      {quote.eps_growth_0y_pct != null && <span title="Current FY EPS est. growth">EPS gr 0y: <strong>{quote.eps_growth_0y_pct.toFixed(1)}%</strong></span>}
+                      {quote.eps_growth_1y_pct != null && <span title="Next FY EPS est. growth">EPS gr +1y: <strong>{quote.eps_growth_1y_pct.toFixed(1)}%</strong></span>}
+                      {quote.price_sales_ttm != null && <span>P/S: <strong>{quote.price_sales_ttm.toFixed(2)}</strong></span>}
+                      {quote.price_book_mrq != null && <span>P/B: <strong>{quote.price_book_mrq.toFixed(2)}</strong></span>}
                       {histPe?.current_pe != null && <span>Current P/E (trailing): <strong>{histPe.current_pe}</strong></span>}
                       {histPe?.pe_percentile != null && <span>P/E percentile (hist.): <strong>{histPe.pe_percentile}%</strong></span>}
+                      {/* Analyst ratings: target + bar */}
+                      {(() => {
+                        const sb = quote.analyst_strong_buy ?? 0, b = quote.analyst_buy ?? 0, h = quote.analyst_hold ?? 0, s = quote.analyst_sell ?? 0, ss = quote.analyst_strong_sell ?? 0;
+                        const total = sb + b + h + s + ss;
+                        if (total === 0 && quote.analyst_target_price == null) return null;
+                        const parts = [
+                          { n: sb, label: "SB", color: "bg-emerald-500" },
+                          { n: b, label: "B", color: "bg-emerald-400" },
+                          { n: h, label: "H", color: "bg-zinc-400" },
+                          { n: s, label: "S", color: "bg-red-400" },
+                          { n: ss, label: "SS", color: "bg-red-500" },
+                        ];
+                        return (
+                          <div className="flex items-center gap-2" title="Analyst ratings: StrongBuy / Buy / Hold / Sell / StrongSell">
+                            {quote.analyst_target_price != null && (
+                              <span className="tabular-nums font-medium text-zinc-700 dark:text-zinc-300">${quote.analyst_target_price.toFixed(1)}</span>
+                            )}
+                            {total > 0 && (
+                              <div className="flex items-center gap-0.5">
+                                {parts.map(({ n, label, color }) => (
+                                  <div key={label} className="flex items-center gap-0.5">
+                                    <div className={`h-1.5 min-w-[2px] rounded-sm ${color}`} style={{ width: total ? `${Math.max(4, (n / total) * 40)}px` : 0 }} />
+                                    {n > 0 && <span className="text-[10px] text-zinc-500 dark:text-zinc-400">{n}</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
@@ -806,11 +978,11 @@ export function ThemeInstruments({
                 <div className="mt-2 flex flex-wrap items-center gap-3">
                   <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
                     <input type="checkbox" checked={overlayRsi} onChange={(e) => setOverlayRsi(e.target.checked)} className="rounded border-zinc-300" />
-                    Overlay RSI (right axis)
+                    Overlay RSI (RSI {RSI_PERIOD}, right axis)
                   </label>
                   <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
                     <input type="checkbox" checked={overlaySpy} onChange={(e) => setOverlaySpy(e.target.checked)} className="rounded border-zinc-300" />
-                    Overlay SPY (S&P 500)
+                    Overlay with SPY (S&P 500)
                   </label>
                   {overlaySpy && spyQuoteLoading && <span className="text-xs text-zinc-500 dark:text-zinc-400">Loading SPY…</span>}
                   <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
@@ -840,86 +1012,242 @@ export function ThemeInstruments({
                   <>
                     <div className="mt-3 h-52 w-full">
                       <ResponsiveContainer width="100%" height="100%">
-                        <ComposedChart data={chartDataWithSpy} margin={{ top: 8, right: overlayRsi ? 44 : 8, bottom: 8, left: 8 }}>
-                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v) => (v && String(v).slice(5)) || v} />
-                          {/* Left axis (default): price or % return; no yAxisId so Lines without yAxisId bind here */}
-                          <YAxis
-                            tick={{ fontSize: 10 }}
-                            domain={priceChartYDomain === "auto" ? ["auto", "auto"] : priceChartYDomain}
-                            tickFormatter={(v) => (hasOverlayData ? `${Number(v).toFixed(1)}%` : Number(v).toFixed(0))}
-                          />
-                          {overlayRsi && (
-                            <YAxis
-                              yAxisId="rsi"
-                              orientation="right"
-                              domain={[0, 100]}
-                              tick={{ fontSize: 9 }}
-                              width={36}
-                              tickFormatter={(v) => String(v)}
+                        {overlaySpy ? (
+                          <ComposedChart
+                            data={singleIndexSeriesWithSpy}
+                            margin={{ top: 8, right: overlayRsi ? 52 : 8, bottom: 8, left: 8 }}
+                          >
+                            <XAxis
+                              dataKey="date"
+                              tick={{ fontSize: 10 }}
+                              tickFormatter={(v) => (v && String(v).slice(5)) || v}
                             />
-                          )}
-                          <Tooltip
-                            content={({ active, payload }) => {
-                              if (!active || !payload?.length) return null;
-                              const p = payload[0]?.payload as ChartPointWithSpy | undefined;
-                              if (!p) return null;
-                              if (hasOverlayData && p.closePctReturn != null) {
+                            {/* Single index axis: both symbol and SPY share this normalized 100 = start scale */}
+                            <YAxis
+                              yAxisId="index"
+                              tick={{ fontSize: 10 }}
+                              domain={["auto", "auto"]}
+                              tickFormatter={(v) => Number(v).toFixed(0)}
+                            />
+                            {/* Optional RSI axis on the right as well */}
+                            {overlayRsi && (
+                              <YAxis
+                                yAxisId="rsi"
+                                orientation="right"
+                                domain={[0, 100]}
+                                tick={{ fontSize: 9 }}
+                                width={32}
+                                tickFormatter={(v) => String(v)}
+                              />
+                            )}
+                            <Tooltip
+                              content={({ active, payload }) => {
+                                if (!active || !payload?.length) return null;
+                                const p = payload[0]?.payload as SingleIndexPoint | undefined;
+                                if (!p) return null;
                                 return (
                                   <div className="rounded-lg border border-zinc-200 bg-white p-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
                                     <div className="font-medium">{p.date}</div>
-                                    <div>{selectedSymbol}: {p.closePctReturn >= 0 ? "+" : ""}{p.closePctReturn.toFixed(2)}% {p.close != null && <span className="text-zinc-500">(${p.close})</span>}</div>
-                                    {p.spyPctReturn != null && (
-                                      <div>SPY: {p.spyPctReturn >= 0 ? "+" : ""}{p.spyPctReturn.toFixed(2)}% {p.spyClose != null && <span className="text-zinc-500">(${p.spyClose.toFixed(2)})</span>}</div>
+                                    <div>
+                                      {selectedSymbol}:{" "}
+                                      {Number.isFinite(p.value) ? p.value.toFixed(1) : "—"}
+                                    </div>
+                                    {p.spyIndex != null && (
+                                      <div>SPY: {p.spyIndex.toFixed(1)}</div>
                                     )}
-                                    {overlayRsi && p.rsi_14 != null && <div>RSI(14): <strong>{p.rsi_14.toFixed(1)}</strong></div>}
+                                    {overlayRsi && p.rsi_14 != null && (
+                                      <div>
+                                        RSI({RSI_PERIOD}): <strong>{p.rsi_14.toFixed(1)}</strong>
+                                      </div>
+                                    )}
+                                    <div>Volume: {p.volume.toLocaleString()}</div>
                                   </div>
                                 );
+                              }}
+                            />
+                            {overlayRsi && (
+                              <>
+                                <ReferenceLine
+                                  yAxisId="rsi"
+                                  y={70}
+                                  stroke="#ef4444"
+                                  strokeDasharray="2 2"
+                                  strokeOpacity={0.7}
+                                />
+                                <ReferenceLine
+                                  yAxisId="rsi"
+                                  y={30}
+                                  stroke="#22c55e"
+                                  strokeDasharray="2 2"
+                                  strokeOpacity={0.7}
+                                />
+                              </>
+                            )}
+                            {narrativeMarkers.map((n) => (
+                              <ReferenceLine
+                                key={n.date}
+                                x={n.date}
+                                stroke={STANCE_COLORS[n.stance] ?? STANCE_COLORS.neutral}
+                                strokeDasharray="2 2"
+                                strokeOpacity={0.8}
+                              />
+                            ))}
+                            {/* Selected symbol normalized index */}
+                            <Line
+                              yAxisId="index"
+                              type="monotone"
+                              dataKey="value"
+                              stroke="#3b82f6"
+                              strokeWidth={2}
+                              dot={false}
+                              name={
+                                selectedSymbol
+                                  ? `${selectedSymbol} (100 = start)`
+                                  : "Index (100 = start)"
                               }
-                              return (
-                                <div className="rounded-lg border border-zinc-200 bg-white p-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
-                                  <div className="font-medium">{p.date}</div>
-                                  <div>Close: {p.close}</div>
-                                  {overlayRsi && p.rsi_14 != null && <div>RSI(14): <strong>{p.rsi_14.toFixed(1)}</strong></div>}
-                                  <div>Volume: {p.volume.toLocaleString()}</div>
-                                </div>
-                              );
-                            }}
-                          />
-                          {hasOverlayData ? (
-                            <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="2 2" strokeOpacity={0.6} />
-                          ) : null}
-                          {overlayRsi && (
-                            <>
-                              <ReferenceLine yAxisId="rsi" y={70} stroke="#ef4444" strokeDasharray="2 2" strokeOpacity={0.7} />
-                              <ReferenceLine yAxisId="rsi" y={30} stroke="#22c55e" strokeDasharray="2 2" strokeOpacity={0.7} />
-                            </>
-                          )}
-                          {narrativeMarkers.map((n) => (
-                            <ReferenceLine key={n.date} x={n.date} stroke={STANCE_COLORS[n.stance] ?? STANCE_COLORS.neutral} strokeDasharray="2 2" strokeOpacity={0.8} />
-                          ))}
-                          {hasOverlayData ? (
-                            <>
-                              <Line type="monotone" dataKey="closePctReturn" stroke="#3b82f6" strokeWidth={2} dot={false} name={selectedSymbol ?? "Price"} />
-                              <Line type="monotone" dataKey="spyPctReturn" stroke="#f59e0b" strokeWidth={2} strokeDasharray="4 2" dot={false} name="SPY" />
-                            </>
-                          ) : (
-                            <Line type="monotone" dataKey="close" stroke="#3b82f6" strokeWidth={2} dot={false} name="Price" />
-                          )}
-                          {overlayRsi && (
-                            <Line type="monotone" dataKey="rsi_14" yAxisId="rsi" stroke="#a855f7" strokeWidth={1.5} dot={false} name="RSI(14)" />
-                          )}
-                          <Legend />
-                        </ComposedChart>
+                            />
+                            {/* SPY normalized index (same axis) */}
+                            {spyQuote?.prices?.length ? (
+                              <Line
+                                yAxisId="index"
+                                type="monotone"
+                                dataKey="spyIndex"
+                                stroke="#f59e0b"
+                                strokeWidth={2}
+                                strokeDasharray="4 2"
+                                dot={false}
+                                name="SPY"
+                              />
+                            ) : null}
+                            {overlayRsi && (
+                              <Line
+                                type="monotone"
+                                dataKey="rsi_14"
+                                yAxisId="rsi"
+                                stroke="#a855f7"
+                                strokeWidth={1.5}
+                                dot={false}
+                                name={`RSI(${RSI_PERIOD})`}
+                              />
+                            )}
+                            <Legend />
+                          </ComposedChart>
+                        ) : (
+                          <ComposedChart
+                            data={chartData}
+                            margin={{ top: 8, right: overlayRsi ? 52 : 8, bottom: 8, left: 8 }}
+                          >
+                            <XAxis
+                              dataKey="date"
+                              tick={{ fontSize: 10 }}
+                              tickFormatter={(v) => (v && String(v).slice(5)) || v}
+                            />
+                            {/* Left axis: raw price for selected symbol */}
+                            <YAxis
+                              yAxisId="price"
+                              tick={{ fontSize: 10 }}
+                              domain={["auto", "auto"]}
+                              tickFormatter={(v) => Number(v).toFixed(0)}
+                            />
+                            {/* Optional RSI axis on the right */}
+                            {overlayRsi && (
+                              <YAxis
+                                yAxisId="rsi"
+                                orientation="right"
+                                domain={[0, 100]}
+                                tick={{ fontSize: 9 }}
+                                width={32}
+                                tickFormatter={(v) => String(v)}
+                              />
+                            )}
+                            <Tooltip
+                              content={({ active, payload }) => {
+                                if (!active || !payload?.length) return null;
+                                const p = payload[0]?.payload as PricePoint | undefined;
+                                if (!p) return null;
+                                return (
+                                  <div className="rounded-lg border border-zinc-200 bg-white p-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+                                    <div className="font-medium">
+                                      {(p.date && String(p.date).slice(0, 10)) || ""}
+                                    </div>
+                                    <div>
+                                      {selectedSymbol}:{" "}
+                                      {Number.isFinite(p.close)
+                                        ? p.close.toFixed(2)
+                                        : "—"}
+                                    </div>
+                                    {overlayRsi && p.rsi_14 != null && (
+                                      <div>
+                                        RSI({RSI_PERIOD}):{" "}
+                                        <strong>{p.rsi_14.toFixed(1)}</strong>
+                                      </div>
+                                    )}
+                                    <div>Volume: {p.volume.toLocaleString()}</div>
+                                  </div>
+                                );
+                              }}
+                            />
+                            {overlayRsi && (
+                              <>
+                                <ReferenceLine
+                                  yAxisId="rsi"
+                                  y={70}
+                                  stroke="#ef4444"
+                                  strokeDasharray="2 2"
+                                  strokeOpacity={0.7}
+                                />
+                                <ReferenceLine
+                                  yAxisId="rsi"
+                                  y={30}
+                                  stroke="#22c55e"
+                                  strokeDasharray="2 2"
+                                  strokeOpacity={0.7}
+                                />
+                              </>
+                            )}
+                            {narrativeMarkers.map((n) => (
+                              <ReferenceLine
+                                key={n.date}
+                                x={n.date}
+                                stroke={STANCE_COLORS[n.stance] ?? STANCE_COLORS.neutral}
+                                strokeDasharray="2 2"
+                                strokeOpacity={0.8}
+                              />
+                            ))}
+                            {/* Selected symbol raw price */}
+                            <Line
+                              yAxisId="price"
+                              type="monotone"
+                              dataKey="close"
+                              stroke="#3b82f6"
+                              strokeWidth={2}
+                              dot={false}
+                              name={selectedSymbol ?? "Price"}
+                            />
+                            {overlayRsi && (
+                              <Line
+                                type="monotone"
+                                dataKey="rsi_14"
+                                yAxisId="rsi"
+                                stroke="#a855f7"
+                                strokeWidth={1.5}
+                                dot={false}
+                                name={`RSI(${RSI_PERIOD})`}
+                              />
+                            )}
+                            <Legend />
+                          </ComposedChart>
+                        )}
                       </ResponsiveContainer>
                     </div>
-                    {overlaySpy && (
+                    {overlaySpy && !spyQuoteLoading && (
                       <p className="mt-1 text-[10px] text-zinc-500 dark:text-zinc-400">
-                        {spyQuoteLoading ? "Loading SPY…" : hasOverlayData ? "Cumulative % return from first common date. SPY data from Alpha Vantage." : spyQuote?.prices?.length ? "Aligning dates…" : "No SPY data yet."}
+                        Both {selectedSymbol} and SPY are shown as normalized indexes (100 = start) on a single axis.
                       </p>
                     )}
                     <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                       <div className="h-24 w-full">
-                        <p className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400">RSI(14)</p>
+                        <p className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400">RSI({RSI_PERIOD})</p>
                         <ResponsiveContainer width="100%" height="80%">
                           <ComposedChart data={chartData} margin={{ top: 2, right: 4, bottom: 2, left: 4 }}>
                             <XAxis dataKey="date" hide />
@@ -931,14 +1259,31 @@ export function ThemeInstruments({
                         </ResponsiveContainer>
                       </div>
                       <div className="h-24 w-full">
-                        <p className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400">MACD</p>
+                        <p className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400">
+                          MACD ({MACD_FAST}, {MACD_SLOW}, {MACD_SIGNAL})
+                        </p>
                         <ResponsiveContainer width="100%" height="80%">
                           <ComposedChart data={chartData} margin={{ top: 2, right: 4, bottom: 2, left: 4 }}>
                             <XAxis dataKey="date" hide />
                             <YAxis tick={{ fontSize: 9 }} width={36} />
                             <Bar dataKey="macd_hist" fill="#94a3b8" radius={0} name="Hist" />
-                            <Line type="monotone" dataKey="macd_line" stroke="#3b82f6" strokeWidth={1} dot={false} name="MACD" />
-                            <Line type="monotone" dataKey="macd_signal" stroke="#f59e0b" strokeWidth={1} strokeDasharray="2 2" dot={false} name="Signal" />
+                            <Line
+                              type="monotone"
+                              dataKey="macd_line"
+                              stroke="#3b82f6"
+                              strokeWidth={1}
+                              dot={false}
+                              name={`MACD (${MACD_FAST}, ${MACD_SLOW}, ${MACD_SIGNAL})`}
+                            />
+                            <Line
+                              type="monotone"
+                              dataKey="macd_signal"
+                              stroke="#f59e0b"
+                              strokeWidth={1}
+                              strokeDasharray="2 2"
+                              dot={false}
+                              name="Signal"
+                            />
                           </ComposedChart>
                         </ResponsiveContainer>
                       </div>

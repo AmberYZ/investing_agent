@@ -133,10 +133,26 @@ class BasketSummaryItemOut(BasketItemOut):
     pct_6m: Optional[float] = None
     quarterly_earnings_growth_yoy: Optional[float] = None
     quarterly_revenue_growth_yoy: Optional[float] = None
-    next_fy_eps_estimate: Optional[float] = None
-    eps_revision_up_30d: Optional[int] = None
-    eps_revision_down_30d: Optional[int] = None
-    eps_growth_pct: Optional[float] = None
+    # Analyst ratings (EODHD AnalystRatings)
+    analyst_target_price: Optional[float] = None
+    analyst_strong_buy: Optional[int] = None
+    analyst_buy: Optional[int] = None
+    analyst_hold: Optional[int] = None
+    analyst_sell: Optional[int] = None
+    analyst_strong_sell: Optional[int] = None
+    # EPS growth from Earnings.Trend (0y=current FY, +1y=next FY)
+    eps_growth_0y_pct: Optional[float] = None
+    eps_growth_1y_pct: Optional[float] = None
+    # Valuation extras
+    price_sales_ttm: Optional[float] = None
+    price_book_mrq: Optional[float] = None
+    enterprise_value_ebitda: Optional[float] = None
+    week_52_high: Optional[float] = None
+    week_52_low: Optional[float] = None
+    return_on_equity_ttm: Optional[float] = None
+    operating_margin_ttm: Optional[float] = None
+    profit_margin: Optional[float] = None
+    trailing_12m_eps: Optional[float] = None
 
 
 class ThemeBasketMetricsOut(BaseModel):
@@ -153,10 +169,23 @@ class ThemeBasketMetricsOut(BaseModel):
     pct_6m: Optional[float] = None
     quarterly_earnings_growth_yoy: Optional[float] = None
     quarterly_revenue_growth_yoy: Optional[float] = None
-    next_fy_eps_estimate: Optional[float] = None
-    eps_revision_up_30d: Optional[int] = None
-    eps_revision_down_30d: Optional[int] = None
-    eps_growth_pct: Optional[float] = None
+    analyst_target_price: Optional[float] = None
+    analyst_strong_buy: Optional[int] = None
+    analyst_buy: Optional[int] = None
+    analyst_hold: Optional[int] = None
+    analyst_sell: Optional[int] = None
+    analyst_strong_sell: Optional[int] = None
+    eps_growth_0y_pct: Optional[float] = None
+    eps_growth_1y_pct: Optional[float] = None
+    price_sales_ttm: Optional[float] = None
+    price_book_mrq: Optional[float] = None
+    enterprise_value_ebitda: Optional[float] = None
+    week_52_high: Optional[float] = None
+    week_52_low: Optional[float] = None
+    return_on_equity_ttm: Optional[float] = None
+    operating_margin_ttm: Optional[float] = None
+    profit_margin: Optional[float] = None
+    trailing_12m_eps: Optional[float] = None
 
 
 class AdminThemeOut(BaseModel):
@@ -285,7 +314,7 @@ class BatchNarrativeSummaryItemOut(BaseModel):
 
 
 class RelatedNewsItemOut(BaseModel):
-    """One news item from Alpha Vantage (or similar) for a theme."""
+    """One news item from EODHD (or similar) for a theme."""
     title: str
     url: Optional[str] = None
     time: Optional[str] = None
@@ -517,7 +546,7 @@ class SuggestInstrumentsOut(BaseModel):
 
 
 class InstrumentSearchItem(BaseModel):
-    """One result from Alpha Vantage SYMBOL_SEARCH (typeahead when adding tickers)."""
+    """One result from EODHD search (typeahead when adding tickers)."""
     symbol: str
     name: Optional[str] = None
     type: str = "stock"
@@ -552,10 +581,23 @@ class InstrumentSummaryOut(BaseModel):
     latest_rsi: Optional[float] = None
     quarterly_earnings_growth_yoy: Optional[float] = None
     quarterly_revenue_growth_yoy: Optional[float] = None
-    next_fy_eps_estimate: Optional[float] = None
-    eps_revision_up_30d: Optional[int] = None
-    eps_revision_down_30d: Optional[int] = None
-    eps_growth_pct: Optional[float] = None
+    analyst_target_price: Optional[float] = None
+    analyst_strong_buy: Optional[int] = None
+    analyst_buy: Optional[int] = None
+    analyst_hold: Optional[int] = None
+    analyst_sell: Optional[int] = None
+    analyst_strong_sell: Optional[int] = None
+    eps_growth_0y_pct: Optional[float] = None
+    eps_growth_1y_pct: Optional[float] = None
+    price_sales_ttm: Optional[float] = None
+    price_book_mrq: Optional[float] = None
+    enterprise_value_ebitda: Optional[float] = None
+    week_52_high: Optional[float] = None
+    week_52_low: Optional[float] = None
+    return_on_equity_ttm: Optional[float] = None
+    operating_margin_ttm: Optional[float] = None
+    profit_margin: Optional[float] = None
+    trailing_12m_eps: Optional[float] = None
     message: Optional[str] = None
 
 
@@ -578,9 +620,22 @@ class BasketTickerRowOut(BaseModel):
     latest_rsi: Optional[float] = None
     quarterly_earnings_growth_yoy: Optional[float] = None
     quarterly_revenue_growth_yoy: Optional[float] = None
-    next_fy_eps_estimate: Optional[float] = None
-    eps_revision_up_30d: Optional[int] = None
-    eps_revision_down_30d: Optional[int] = None
-    eps_growth_pct: Optional[float] = None
+    analyst_target_price: Optional[float] = None
+    analyst_strong_buy: Optional[int] = None
+    analyst_buy: Optional[int] = None
+    analyst_hold: Optional[int] = None
+    analyst_sell: Optional[int] = None
+    analyst_strong_sell: Optional[int] = None
+    eps_growth_0y_pct: Optional[float] = None
+    eps_growth_1y_pct: Optional[float] = None
+    price_sales_ttm: Optional[float] = None
+    price_book_mrq: Optional[float] = None
+    enterprise_value_ebitda: Optional[float] = None
+    week_52_high: Optional[float] = None
+    week_52_low: Optional[float] = None
+    return_on_equity_ttm: Optional[float] = None
+    operating_margin_ttm: Optional[float] = None
+    profit_margin: Optional[float] = None
+    trailing_12m_eps: Optional[float] = None
     message: Optional[str] = None
 

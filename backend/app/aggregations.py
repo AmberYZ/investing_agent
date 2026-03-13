@@ -308,7 +308,7 @@ def run_daily_aggregations(target_date: Optional[dt.date] = None) -> None:
                 "LLM narrative summary generation failed: %s", e
             )
 
-        # 5) Populate daily market cache for followed themes (so digest refresh does not hit Alpha Vantage)
+        # 5) Populate daily market cache for followed themes (so digest refresh does not hit EODHD)
         try:
             from app.followed_themes import get_followed_theme_ids
             from app.trading_digest import populate_daily_market_cache, populate_instrument_market_cache

@@ -785,7 +785,7 @@ def _basket_metrics_from_cache(db: Session, theme_id: int) -> tuple[dict | None,
 
     Looks up the most recent ThemeMarketSnapshot for this theme (by snapshot_date)
     so we always serve the latest end-of-day style data without triggering new
-    Alpha Vantage calls on-demand.
+    EODHD calls on-demand.
     """
     import json as _json
     row = (
@@ -824,7 +824,7 @@ def _instrument_metrics_from_cache(db: Session, symbol: str) -> tuple[dict | Non
 
 def _basket_metrics_for_symbol(primary_symbol: str) -> dict:
     """Fetch all basket metrics for one primary symbol (for lazy-loaded basket)."""
-    from app.market_data import get_prices_and_valuation, compute_period_returns, get_earnings_estimates, get_eps_growth
+    from app.market_data import get_prices_and_valuation, compute_period_returns
     out: dict = {
         "forward_pe": None,
         "peg_ratio": None,
@@ -835,10 +835,23 @@ def _basket_metrics_for_symbol(primary_symbol: str) -> dict:
         "pct_6m": None,
         "quarterly_earnings_growth_yoy": None,
         "quarterly_revenue_growth_yoy": None,
-        "next_fy_eps_estimate": None,
-        "eps_revision_up_30d": None,
-        "eps_revision_down_30d": None,
-        "eps_growth_pct": None,
+        "analyst_target_price": None,
+        "analyst_strong_buy": None,
+        "analyst_buy": None,
+        "analyst_hold": None,
+        "analyst_sell": None,
+        "analyst_strong_sell": None,
+        "eps_growth_0y_pct": None,
+        "eps_growth_1y_pct": None,
+        "price_sales_ttm": None,
+        "price_book_mrq": None,
+        "enterprise_value_ebitda": None,
+        "week_52_high": None,
+        "week_52_low": None,
+        "return_on_equity_ttm": None,
+        "operating_margin_ttm": None,
+        "profit_margin": None,
+        "trailing_12m_eps": None,
     }
     try:
         data = get_prices_and_valuation(primary_symbol, months=6)
@@ -856,12 +869,23 @@ def _basket_metrics_for_symbol(primary_symbol: str) -> dict:
         out["peg_ratio"] = data.get("peg_ratio")
         out["quarterly_earnings_growth_yoy"] = data.get("quarterly_earnings_growth_yoy")
         out["quarterly_revenue_growth_yoy"] = data.get("quarterly_revenue_growth_yoy")
-        est = get_earnings_estimates(primary_symbol)
-        out["next_fy_eps_estimate"] = est.get("next_fy_eps_estimate")
-        out["eps_revision_up_30d"] = est.get("eps_revision_up_30d")
-        out["eps_revision_down_30d"] = est.get("eps_revision_down_30d")
-        growth = get_eps_growth(primary_symbol)
-        out["eps_growth_pct"] = growth.get("eps_growth_pct")
+        out["analyst_target_price"] = data.get("analyst_target_price")
+        out["analyst_strong_buy"] = data.get("analyst_strong_buy")
+        out["analyst_buy"] = data.get("analyst_buy")
+        out["analyst_hold"] = data.get("analyst_hold")
+        out["analyst_sell"] = data.get("analyst_sell")
+        out["analyst_strong_sell"] = data.get("analyst_strong_sell")
+        out["eps_growth_0y_pct"] = data.get("eps_growth_0y_pct")
+        out["eps_growth_1y_pct"] = data.get("eps_growth_1y_pct")
+        out["price_sales_ttm"] = data.get("price_sales_ttm")
+        out["price_book_mrq"] = data.get("price_book_mrq")
+        out["enterprise_value_ebitda"] = data.get("enterprise_value_ebitda")
+        out["week_52_high"] = data.get("week_52_high")
+        out["week_52_low"] = data.get("week_52_low")
+        out["return_on_equity_ttm"] = data.get("return_on_equity_ttm")
+        out["operating_margin_ttm"] = data.get("operating_margin_ttm")
+        out["profit_margin"] = data.get("profit_margin")
+        out["trailing_12m_eps"] = data.get("trailing_12m_eps")
     except Exception:
         pass
     return out
@@ -909,7 +933,7 @@ def get_basket_summary(
         primary_symbol = primary_by_id.get(tid)
         if primary_symbol:
             row.primary_symbol = primary_symbol
-        # Metrics: use cached daily snapshot only (no live Alpha Vantage on-demand).
+        # Metrics: use cached daily snapshot only (no live EODHD on-demand).
         # If no snapshot exists yet, return theme row without metrics so the UI stays fast.
         if include_metrics and primary_symbol:
             metrics, snapshot_date = _basket_metrics_from_cache(db, tid)
@@ -926,10 +950,23 @@ def get_basket_summary(
             row.pct_6m = metrics.get("pct_6m")
             row.quarterly_earnings_growth_yoy = metrics.get("quarterly_earnings_growth_yoy")
             row.quarterly_revenue_growth_yoy = metrics.get("quarterly_revenue_growth_yoy")
-            row.next_fy_eps_estimate = metrics.get("next_fy_eps_estimate")
-            row.eps_revision_up_30d = metrics.get("eps_revision_up_30d")
-            row.eps_revision_down_30d = metrics.get("eps_revision_down_30d")
-            row.eps_growth_pct = metrics.get("eps_growth_pct")
+            row.analyst_target_price = metrics.get("analyst_target_price")
+            row.analyst_strong_buy = metrics.get("analyst_strong_buy")
+            row.analyst_buy = metrics.get("analyst_buy")
+            row.analyst_hold = metrics.get("analyst_hold")
+            row.analyst_sell = metrics.get("analyst_sell")
+            row.analyst_strong_sell = metrics.get("analyst_strong_sell")
+            row.eps_growth_0y_pct = metrics.get("eps_growth_0y_pct")
+            row.eps_growth_1y_pct = metrics.get("eps_growth_1y_pct")
+            row.price_sales_ttm = metrics.get("price_sales_ttm")
+            row.price_book_mrq = metrics.get("price_book_mrq")
+            row.enterprise_value_ebitda = metrics.get("enterprise_value_ebitda")
+            row.week_52_high = metrics.get("week_52_high")
+            row.week_52_low = metrics.get("week_52_low")
+            row.return_on_equity_ttm = metrics.get("return_on_equity_ttm")
+            row.operating_margin_ttm = metrics.get("operating_margin_ttm")
+            row.profit_margin = metrics.get("profit_margin")
+            row.trailing_12m_eps = metrics.get("trailing_12m_eps")
         result.append(row)
     return result
 
@@ -943,7 +980,7 @@ def get_theme_basket_metrics(theme_id: int, db: Session = Depends(get_db)):
     primary_symbol = _theme_primary_symbol(db, theme_id)
     if not primary_symbol:
         return ThemeBasketMetricsOut(theme_id=theme_id)
-    # Use cached daily snapshot only; do not hit Alpha Vantage on-demand.
+    # Use cached daily snapshot only; do not hit EODHD on-demand.
     metrics, snapshot_date = _basket_metrics_from_cache(db, theme_id)
     if not metrics:
         return ThemeBasketMetricsOut(theme_id=theme_id, primary_symbol=primary_symbol)
@@ -957,7 +994,7 @@ def get_theme_basket_metrics(theme_id: int, db: Session = Depends(get_db)):
 
 @app.get("/themes/{theme_id}/related-news", response_model=list[RelatedNewsItemOut])
 def get_theme_related_news(theme_id: int, limit: int = Query(10, le=50), db: Session = Depends(get_db)):
-    """Recent news for this theme's primary ticker (Alpha Vantage NEWS_SENTIMENT, cached 1h)."""
+    """Recent news for this theme's primary ticker (EODHD news API, cached 1h)."""
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
@@ -982,7 +1019,7 @@ def get_theme_related_news(theme_id: int, limit: int = Query(10, le=50), db: Ses
 @app.get("/basket/trading-digest", response_model=dict[str, TradingDigestItemOut])
 def get_basket_trading_digest(
     db: Session = Depends(get_db),
-    include_news: bool = Query(False, description="If true, fetch related news per theme (Alpha Vantage). Disabled by default."),
+    include_news: bool = Query(False, description="If true, fetch related news per theme (EODHD). Disabled by default."),
 ):
     """Trading-oriented digest for each followed theme: prevailing, what_changed, what_market_waiting, worries, trade_ideas. related_news disabled by default."""
     import json as _json
@@ -1105,10 +1142,23 @@ def get_basket_tickers(
                 row.latest_rsi = metrics.get("latest_rsi")
                 row.quarterly_earnings_growth_yoy = metrics.get("quarterly_earnings_growth_yoy")
                 row.quarterly_revenue_growth_yoy = metrics.get("quarterly_revenue_growth_yoy")
-                row.next_fy_eps_estimate = metrics.get("next_fy_eps_estimate")
-                row.eps_revision_up_30d = metrics.get("eps_revision_up_30d")
-                row.eps_revision_down_30d = metrics.get("eps_revision_down_30d")
-                row.eps_growth_pct = metrics.get("eps_growth_pct")
+                row.analyst_target_price = metrics.get("analyst_target_price")
+                row.analyst_strong_buy = metrics.get("analyst_strong_buy")
+                row.analyst_buy = metrics.get("analyst_buy")
+                row.analyst_hold = metrics.get("analyst_hold")
+                row.analyst_sell = metrics.get("analyst_sell")
+                row.analyst_strong_sell = metrics.get("analyst_strong_sell")
+                row.eps_growth_0y_pct = metrics.get("eps_growth_0y_pct")
+                row.eps_growth_1y_pct = metrics.get("eps_growth_1y_pct")
+                row.price_sales_ttm = metrics.get("price_sales_ttm")
+                row.price_book_mrq = metrics.get("price_book_mrq")
+                row.enterprise_value_ebitda = metrics.get("enterprise_value_ebitda")
+                row.week_52_high = metrics.get("week_52_high")
+                row.week_52_low = metrics.get("week_52_low")
+                row.return_on_equity_ttm = metrics.get("return_on_equity_ttm")
+                row.operating_margin_ttm = metrics.get("operating_margin_ttm")
+                row.profit_margin = metrics.get("profit_margin")
+                row.trailing_12m_eps = metrics.get("trailing_12m_eps")
             result.append(row)
     return result
 
@@ -2013,7 +2063,7 @@ def get_theme_metrics(
 def search_instruments(
     q: str = Query(..., min_length=1, max_length=64),
 ):
-    """Search tickers by keyword (company name or symbol) via Alpha Vantage SYMBOL_SEARCH for typeahead when adding instruments."""
+    """Search tickers by keyword (company name or symbol) via EODHD search for typeahead when adding instruments."""
     from app.market_data import search_symbols
     result = search_symbols(q)
     return InstrumentSearchOut(
@@ -2065,7 +2115,7 @@ def list_theme_instruments_summary(
     include_children: bool = Query(True, description="If true, include instruments from all descendant (child) themes; default True so parent themes load all child tickers (e.g. on basket page)."),
     db: Session = Depends(get_db),
 ):
-    """List instruments for this theme with price and valuation metrics (for basket ticker rows). Uses DB cache only (no live Alpha Vantage). With include_children=true (default) returns tickers from this theme and all child themes."""
+    """List instruments for this theme with price and valuation metrics (for basket ticker rows). Uses DB cache only (no live EODHD). With include_children=true (default) returns tickers from this theme and all child themes."""
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
@@ -2095,10 +2145,23 @@ def list_theme_instruments_summary(
             row.latest_rsi = metrics.get("latest_rsi")
             row.quarterly_earnings_growth_yoy = metrics.get("quarterly_earnings_growth_yoy")
             row.quarterly_revenue_growth_yoy = metrics.get("quarterly_revenue_growth_yoy")
-            row.next_fy_eps_estimate = metrics.get("next_fy_eps_estimate")
-            row.eps_revision_up_30d = metrics.get("eps_revision_up_30d")
-            row.eps_revision_down_30d = metrics.get("eps_revision_down_30d")
-            row.eps_growth_pct = metrics.get("eps_growth_pct")
+            row.analyst_target_price = metrics.get("analyst_target_price")
+            row.analyst_strong_buy = metrics.get("analyst_strong_buy")
+            row.analyst_buy = metrics.get("analyst_buy")
+            row.analyst_hold = metrics.get("analyst_hold")
+            row.analyst_sell = metrics.get("analyst_sell")
+            row.analyst_strong_sell = metrics.get("analyst_strong_sell")
+            row.eps_growth_0y_pct = metrics.get("eps_growth_0y_pct")
+            row.eps_growth_1y_pct = metrics.get("eps_growth_1y_pct")
+            row.price_sales_ttm = metrics.get("price_sales_ttm")
+            row.price_book_mrq = metrics.get("price_book_mrq")
+            row.enterprise_value_ebitda = metrics.get("enterprise_value_ebitda")
+            row.week_52_high = metrics.get("week_52_high")
+            row.week_52_low = metrics.get("week_52_low")
+            row.return_on_equity_ttm = metrics.get("return_on_equity_ttm")
+            row.operating_margin_ttm = metrics.get("operating_margin_ttm")
+            row.profit_margin = metrics.get("profit_margin")
+            row.trailing_12m_eps = metrics.get("trailing_12m_eps")
         result.append(row)
     return result
 
@@ -2208,17 +2271,9 @@ def get_instrument_prices(
     symbol: str,
     months: int = Query(6, ge=1, le=12),
 ):
-    """Price history, valuation (trailing/forward PE, PEG), earnings estimates, EPS growth, and technical indicators via Alpha Vantage."""
-    from app.market_data import get_prices_and_valuation, get_earnings_estimates, get_eps_growth
-    out = dict(get_prices_and_valuation(symbol, months=months))
-    est = get_earnings_estimates(symbol)
-    out["next_fy_eps_estimate"] = est.get("next_fy_eps_estimate")
-    out["eps_revision_up_30d"] = est.get("eps_revision_up_30d")
-    out["eps_revision_down_30d"] = est.get("eps_revision_down_30d")
-    growth = get_eps_growth(symbol)
-    out["eps_growth_pct"] = growth.get("eps_growth_pct")
-    out["trailing_12m_eps"] = growth.get("trailing_12m_eps")
-    return out
+    """Price history, valuation (trailing/forward PE, PEG), analyst ratings, EPS growth (0y/1y), and technical indicators via EODHD."""
+    from app.market_data import get_prices_and_valuation
+    return get_prices_and_valuation(symbol, months=months)
 
 
 @app.get("/instruments/{symbol}/historical-pe")
