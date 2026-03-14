@@ -103,7 +103,7 @@ def _format_news_summary(items: list[dict]) -> str:
     """Summarize news items into 1-2 sentences."""
     if not items:
         return "No recent news from EODHD."
-    headlines = [i.get("title", "").strip() for i in items[:5] if i.get("title")]
+    headlines = [i.get("title", "").strip() for i in items[:5] if isinstance(i, dict) and i.get("title")]
     if not headlines:
         return "No recent news from EODHD."
     if len(headlines) == 1:
@@ -112,9 +112,9 @@ def _format_news_summary(items: list[dict]) -> str:
 
 
 def _format_earnings_from_fundamentals(earnings: dict) -> str:
-    """Format Earnings section from fundamentals (History dict)."""
-    history = earnings.get("History") or {}
-    if not isinstance(history, dict):
+    """Format Earnings section from fundamentals (History dict). EODHD may return non-dict for some symbols."""
+    history = earnings.get("History") if isinstance(earnings.get("History"), dict) else {}
+    if not history:
         return "No earnings history in EODHD."
     rows = []
     for fiscal_date, q in sorted(history.items(), reverse=True):
@@ -140,7 +140,7 @@ def _format_earnings_from_fundamentals(earnings: dict) -> str:
 
 def _format_analyst_ratings(data: dict) -> str:
     """Format AnalystRatings from fundamentals."""
-    ar = data.get("AnalystRatings") or {}
+    ar = data.get("AnalystRatings") if isinstance(data.get("AnalystRatings"), dict) else {}
     if not ar:
         return "No analyst ratings in EODHD."
     target = ar.get("TargetPrice")
@@ -162,9 +162,9 @@ def _format_analyst_ratings(data: dict) -> str:
 
 
 def _format_valuation(data: dict) -> str:
-    """Format Valuation and Highlights."""
-    val = data.get("Valuation") or {}
-    hl = data.get("Highlights") or {}
+    """Format Valuation and Highlights. EODHD may return non-dict (e.g. 'N/A') for ETFs."""
+    val = data.get("Valuation") if isinstance(data.get("Valuation"), dict) else {}
+    hl = data.get("Highlights") if isinstance(data.get("Highlights"), dict) else {}
     parts = []
     for key, label in [
         ("ForwardPE", "Fwd P/E"),
@@ -218,7 +218,7 @@ def _format_insider(transactions: list) -> str:
 
 def _format_dividends(data: dict) -> str:
     """Format SplitsDividends."""
-    sd = data.get("SplitsDividends") or {}
+    sd = data.get("SplitsDividends") if isinstance(data.get("SplitsDividends"), dict) else {}
     rate = sd.get("ForwardAnnualDividendRate")
     yield_ = sd.get("ForwardAnnualDividendYield")
     ex = sd.get("ExDividendDate")
@@ -245,7 +245,7 @@ def _format_dividends(data: dict) -> str:
 
 def _format_technicals(data: dict) -> str:
     """Format Technicals (52w high/low)."""
-    tech = data.get("Technicals") or {}
+    tech = data.get("Technicals") if isinstance(data.get("Technicals"), dict) else {}
     high = tech.get("52WeekHigh")
     low = tech.get("52WeekLow")
     if high is None and low is None:
@@ -259,8 +259,8 @@ def _format_technicals(data: dict) -> str:
 
 
 def _format_highlights(data: dict) -> str:
-    """Format Highlights (growth, margins)."""
-    hl = data.get("Highlights") or {}
+    """Format Highlights (growth, margins). EODHD may return non-dict for some symbols."""
+    hl = data.get("Highlights") if isinstance(data.get("Highlights"), dict) else {}
     parts = []
     qeg = hl.get("QuarterlyEarningsGrowthYOY")
     qrg = hl.get("QuarterlyRevenueGrowthYOY")
@@ -385,6 +385,41 @@ def _process_specific_fact(
     return answer[:1200]
 
 
+def _llm_answer_track_question(
+    track_item: str,
+    symbol: str,
+    eodhd_context: str,
+    progress_callback: Optional[Callable[[str, str], None]] = None,
+) -> str:
+    """
+    Call LLM to answer the user's track question given EODHD-sourced context.
+    Returns a short answer string, or empty string if LLM unavailable or on error.
+    """
+    try:
+        from app.llm.provider import chat_completion
+        from app.settings import settings
+    except ImportError:
+        return ""
+    if not getattr(settings, "llm_api_key", None) or not (eodhd_context or "").strip():
+        return ""
+    if progress_callback:
+        progress_callback("LLM", "Answering tracked question")
+    system = (
+        "You are a concise financial research assistant. The user is tracking a question about a stock/symbol. "
+        "Below is context from market data (EODHD: news, fundamentals, earnings, etc.). "
+        "Answer the user's question in 1-3 short sentences based on this context. "
+        "If the context does not contain enough to answer, say so briefly. Do not make up numbers or facts."
+    )
+    user = f"Symbol: {symbol}\n\nTracked question: {track_item}\n\nContext:\n{eodhd_context[:8000]}"
+    try:
+        answer = chat_completion(system=system, user=user, max_tokens=350)
+    except Exception as e:
+        logger.warning("LLM track answer failed: %s", e)
+        return ""
+    answer = (answer or "").strip()
+    return answer[:800] if answer else ""
+
+
 def update_track_item_eodhd(
     track_item: str,
     symbol: str,
@@ -400,7 +435,9 @@ def update_track_item_eodhd(
     symbol = (symbol or "").strip().upper()
     strategy = _classify_strategy(track_item)
     if strategy == STRATEGY_TREND:
-        return _process_trend(track_item, symbol, progress_callback)
+        update = _process_trend(track_item, symbol, progress_callback)
+        llm_answer = _llm_answer_track_question(track_item, symbol, update, progress_callback)
+        return f"{update}\n\n{llm_answer}" if llm_answer else update
     if strategy == STRATEGY_SPECIFIC_FACT:
         return _process_specific_fact(track_item, symbol, progress_callback)
     # Snapshot: existing EODHD-only flow
@@ -425,7 +462,8 @@ def update_track_item_eodhd(
         if progress_callback:
             progress_callback("EODHD Fundamentals", f"Fetching {', '.join(sections)} for {symbol}")
         fund = fetch_fundamentals_filtered(symbol, sections)
-        data = fund.get("data") if not fund.get("message") else None
+        raw = fund.get("data") if not fund.get("message") else None
+        data = raw if isinstance(raw, dict) else None
         if fund.get("message") and not data:
             parts.append(f"Fundamentals: {fund.get('message', 'Unavailable')}")
         elif data:
@@ -436,7 +474,7 @@ def update_track_item_eodhd(
             if EODHD_HIGHLIGHTS in types:
                 parts.append(_format_highlights(data))
             if EODHD_INSIDER in types:
-                ins = data.get("InsiderTransactions") or {}
+                ins = data.get("InsiderTransactions")
                 tx_list = ins if isinstance(ins, list) else list(ins.values()) if isinstance(ins, dict) else []
                 parts.append(_format_insider(tx_list))
             if EODHD_DIVIDENDS in types:
@@ -446,15 +484,16 @@ def update_track_item_eodhd(
 
     # 3) Earnings: from fundamentals if we fetched Earnings section, else get_earnings
     if EODHD_EARNINGS in types:
-        if data and data.get("Earnings"):
-            parts.append(_format_earnings_from_fundamentals(data["Earnings"]))
+        earnings_data = data.get("Earnings") if data and isinstance(data.get("Earnings"), dict) else None
+        if earnings_data:
+            parts.append(_format_earnings_from_fundamentals(earnings_data))
         else:
             if progress_callback:
                 progress_callback("EODHD Earnings", f"Fetching earnings for {symbol}")
             earn = get_earnings(symbol)
             if not earn.get("message"):
                 quarters = earn.get("quarterly_earnings") or []
-                if quarters:
+                if quarters and isinstance(quarters[0], dict):
                     latest = quarters[0]
                     t12 = earn.get("trailing_12m_eps")
                     parts.append(
@@ -473,7 +512,9 @@ def update_track_item_eodhd(
 
     if not parts:
         return "EODHD data could not be retrieved for this symbol. Check API key and symbol."
-    return " ".join(parts)[:1500]  # cap length
+    eodhd_update = " ".join(parts)[:1500]
+    llm_answer = _llm_answer_track_question(track_item, symbol, eodhd_update, progress_callback)
+    return f"{eodhd_update}\n\n{llm_answer}" if llm_answer else eodhd_update
 
 
 def update_theme_track_items_eodhd(
