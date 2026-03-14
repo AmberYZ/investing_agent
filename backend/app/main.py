@@ -2535,6 +2535,7 @@ def get_theme_narratives(
     date: Optional[str] = Query(None, description="'today' to list narratives that got evidence today (newest first)"),
     since: Optional[str] = Query(None, description="ISO date (YYYY-MM-DD) to list narratives with evidence on or after this date"),
     limit: Optional[int] = Query(None, ge=1, le=500, description="Max number of narratives to return (newest first)"),
+    offset: int = Query(0, ge=0, description="Number of narratives to skip (for pagination / load more)"),
     on_latest_date: bool = Query(False, description="If true, return all narratives with evidence on the theme's most recent activity date (no limit)"),
     include_children: bool = Query(False, description="If true, include narratives from all descendant (child) themes"),
     db: Session = Depends(get_db),
@@ -2600,14 +2601,17 @@ def get_theme_narratives(
     if not narrative_ids:
         return []
 
-    # Order by last_seen desc (newest first). When on_latest_date, do not apply limit.
+    # Order by last_seen desc (newest first). When on_latest_date, do not apply limit or offset.
     q = (
         db.query(Narrative)
         .filter(Narrative.id.in_(narrative_ids))
         .order_by(Narrative.last_seen.desc())
     )
-    if limit is not None and not on_latest_date:
-        q = q.limit(limit)
+    if not on_latest_date:
+        if offset:
+            q = q.offset(offset)
+        if limit is not None:
+            q = q.limit(limit)
     narratives = q.all()
     earliest_doc = (
         db.query(Evidence.narrative_id, func.min(doc_date).label("earliest"))

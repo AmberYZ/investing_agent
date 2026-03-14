@@ -101,17 +101,17 @@ export function ThemeNotes({ themeId }: { themeId: string }) {
         )}
       </button>
       {expanded && (
-        <div className="absolute right-0 top-full z-20 mt-1.5 w-80 rounded-xl border border-zinc-200 bg-white p-3 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+        <div className="absolute right-0 top-full z-20 mt-1.5 w-[min(90vw,28rem)] rounded-xl border border-zinc-200 bg-white p-4 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
           <div className="text-xs font-medium text-zinc-700 dark:text-zinc-300">Your notes</div>
           <textarea
             value={content}
             onChange={(e) => setContent(e.target.value)}
             onBlur={save}
             placeholder="Add notes…"
-            rows={3}
-            className="mt-2 w-full resize-y rounded-lg border border-zinc-300 bg-white px-2.5 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+            rows={12}
+            className="mt-2 min-h-[240px] w-full resize-y rounded-lg border border-zinc-300 bg-white px-3 py-2.5 text-sm leading-relaxed text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-200 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-500 dark:focus:ring-zinc-700"
           />
-          <div className="mt-2 flex items-center justify-end gap-2">
+          <div className="mt-3 flex items-center justify-end gap-2">
             <button
               type="button"
               onClick={save}

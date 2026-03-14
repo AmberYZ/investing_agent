@@ -7,7 +7,7 @@ import { ThemeConfidenceChart } from "./ThemeConfidenceChart";
 import { ThemeInstruments } from "./ThemeInstruments";
 import { ThemeNotes } from "./ThemeNotes";
 import { ThemeStanceChart } from "./ThemeStanceChart";
-import { TodaysNarratives } from "./TodaysNarratives";
+import { ThemeNarrativesClient } from "./ThemeNarrativesClient";
 
 type Evidence = {
   id: number;
@@ -130,13 +130,6 @@ async function getThemeDocuments(id: string): Promise<ThemeDocument[]> {
   return res.json();
 }
 
-/** All narratives for the theme and its child themes, newest first (no date filter). */
-async function getThemeNarratives(id: string): Promise<Narrative[]> {
-  const res = await fetch(`${API_BASE}/themes/${id}/narratives?include_children=true`, { cache: "no-store" });
-  if (!res.ok) return [];
-  return res.json();
-}
-
 function Sparkline({ data }: { data: number[] }) {
   if (data.length === 0) return null;
   const max = Math.max(...data);
@@ -170,6 +163,60 @@ function Sparkline({ data }: { data: number[] }) {
   );
 }
 
+function PastMonthSentimentBar({ metricsByStance }: { metricsByStance: ThemeMetricsByStance[] }) {
+  const last30 = metricsByStance.slice(-30);
+  const totals = last30.reduce(
+    (acc, d) => ({
+      bullish: acc.bullish + d.bullish_count,
+      bearish: acc.bearish + d.bearish_count,
+      mixed: acc.mixed + d.mixed_count,
+      neutral: acc.neutral + d.neutral_count,
+    }),
+    { bullish: 0, bearish: 0, mixed: 0, neutral: 0 }
+  );
+  const total = totals.bullish + totals.bearish + totals.mixed + totals.neutral;
+  if (total === 0) {
+    return (
+      <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+        No narratives yet for this theme in the past month.
+      </p>
+    );
+  }
+  const pct = (n: number) => (n / total) * 100;
+  const segments = [
+    { key: "bullish", width: pct(totals.bullish), color: "bg-emerald-500", label: "Bullish" },
+    { key: "bearish", width: pct(totals.bearish), color: "bg-red-500", label: "Bearish" },
+    { key: "mixed", width: pct(totals.mixed), color: "bg-amber-400", label: "Mixed" },
+    { key: "neutral", width: pct(totals.neutral), color: "bg-zinc-400 dark:bg-zinc-500", label: "Neutral" },
+  ].filter((s) => s.width > 0);
+  return (
+    <div className="mt-1.5">
+      <div
+        className="flex h-3 w-full overflow-hidden rounded-full"
+        role="img"
+        aria-label={`Past month: Bullish ${Math.round(pct(totals.bullish))}%, Bearish ${Math.round(pct(totals.bearish))}%, Mixed ${Math.round(pct(totals.mixed))}%, Neutral ${Math.round(pct(totals.neutral))}%`}
+      >
+        {segments.map((s) => (
+          <div
+            key={s.key}
+            className={`${s.color} shrink-0 transition-[width]`}
+            style={{ width: `${s.width}%` }}
+            title={`${s.label}: ${s.width.toFixed(1)}%`}
+          />
+        ))}
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+        {segments.map((s) => (
+          <span key={s.key} className="flex items-center gap-1">
+            <span className={`inline-block h-1.5 w-1.5 rounded-full ${s.color}`} aria-hidden />
+            {s.label} {s.width.toFixed(0)}%
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default async function ThemePage(
   props: {
     params: Promise<{ id: string }>;
@@ -180,16 +227,13 @@ export default async function ThemePage(
   const { months: monthsParam } = await props.searchParams;
   const months = monthsParam === "12" ? 12 : 6;
 
-  const [theme, metrics, metricsByStance, metricsBySubTheme, narrativeSummary, documents, narratives] =
-    await Promise.all([
-      getTheme(id),
-      getThemeMetrics(id, months),
-      getThemeMetricsByStance(id, months),
-      getThemeMetricsBySubTheme(id, months),
-      getNarrativeSummary(id, "30d"),
-      getThemeDocuments(id),
-      getThemeNarratives(id),
-    ]);
+  const [theme, metrics, metricsByStance, metricsBySubTheme, documents] = await Promise.all([
+    getTheme(id),
+    getThemeMetrics(id, months),
+    getThemeMetricsByStance(id, months),
+    getThemeMetricsBySubTheme(id, months),
+    getThemeDocuments(id),
+  ]);
 
   if (!theme) {
     return (
@@ -209,11 +253,6 @@ export default async function ThemePage(
     if (sov == null) return 0;
     return sov <= 1 ? sov * 100 : sov;
   });
-  const hasExtendedSummary =
-    narrativeSummary &&
-    "trending_sub_themes" in narrativeSummary &&
-    Array.isArray((narrativeSummary as NarrativeSummaryExtended).trending_sub_themes);
-
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-black dark:text-zinc-50">
       <MarkThemeAsRead themeId={theme.id} themeLastUpdated={theme.last_updated ?? null} />
@@ -233,47 +272,12 @@ export default async function ThemePage(
             <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
               {theme.description ?? "—"}
             </p>
-            {/* Compact narrative summary — small area, smaller font, bottom aligned with sparkline */}
-            <div className="mt-3 max-h-[120px] overflow-y-auto rounded-lg bg-zinc-50/80 px-3 py-2 dark:bg-zinc-900/50">
+            {/* Past month sentiment mix — colored bar */}
+            <div className="mt-3 rounded-lg bg-zinc-50/80 px-3 py-2 dark:bg-zinc-900/50">
               <div className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                 Narrative summary (past month)
               </div>
-              {narrativeSummary?.summary ? (
-                <>
-                  <div className="mt-1 whitespace-pre-line text-xs leading-snug text-zinc-700 dark:text-zinc-200">
-                    {narrativeSummary.summary.split(/(\*\*[^*]+\*\*)/).map((part, i) =>
-                      part.startsWith("**") && part.endsWith("**") ? (
-                        <strong key={i} className="font-semibold text-zinc-900 dark:text-zinc-50">
-                          {part.slice(2, -2)}
-                        </strong>
-                      ) : (
-                        <span key={i}>{part}</span>
-                      )
-                    )}
-                  </div>
-                  {hasExtendedSummary && (narrativeSummary as NarrativeSummaryExtended).trending_sub_themes?.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {(narrativeSummary as NarrativeSummaryExtended).trending_sub_themes!.map((st) => (
-                        <span
-                          key={st}
-                          className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-200"
-                        >
-                          {st}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {hasExtendedSummary && (narrativeSummary as NarrativeSummaryExtended).inflection_alert && (
-                    <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-300">
-                      Inflection: {(narrativeSummary as NarrativeSummaryExtended).inflection_alert}
-                    </p>
-                  )}
-                </>
-              ) : (
-                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  No narratives yet for this theme in the past month.
-                </p>
-              )}
+              <PastMonthSentimentBar metricsByStance={metricsByStance ?? []} />
             </div>
           </div>
           <div className="flex flex-col items-end justify-between gap-2 text-xs text-zinc-500 dark:text-zinc-400">
@@ -368,8 +372,8 @@ export default async function ThemePage(
                   Newest first. Open original to view source; Reassign to move to another theme.
                 </p>
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-                <TodaysNarratives narratives={narratives ?? []} themeId={id} themeLabel={theme.canonical_label} />
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" data-narrative-scroll>
+                <ThemeNarrativesClient themeId={id} themeLabel={theme.canonical_label} />
               </div>
             </section>
           </div>
