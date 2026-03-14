@@ -120,6 +120,30 @@ class ThemeNotesUpdate(BaseModel):
     content: Optional[str] = None
 
 
+class ThemeTrackItemsOut(BaseModel):
+    """User-defined things to track for a theme (bullet list)."""
+    items: list[str] = Field(default_factory=list)
+
+
+class ThemeTrackItemsUpdate(BaseModel):
+    """Update track items. Accept raw text (split by newlines/commas) or explicit list."""
+    raw: Optional[str] = None
+    items: Optional[list[str]] = None
+
+
+class ThemeTrackUpdateItemOut(BaseModel):
+    """One track item with its latest update from digest refresh."""
+    item: str
+    update: Optional[str] = None
+    last_checked: Optional[str] = None
+
+
+class ThemeTrackResultsOut(BaseModel):
+    """Track items and their latest updates for a theme."""
+    items: list[str] = Field(default_factory=list)
+    updates: list[ThemeTrackUpdateItemOut] = Field(default_factory=list)
+
+
 class BasketSummaryItemOut(BasketItemOut):
     """Basket row with optional price/valuation metrics (from primary ticker)."""
     primary_symbol: Optional[str] = None
@@ -329,6 +353,13 @@ class TradeIdeaOut(BaseModel):
     rationale: str
 
 
+class TrackUpdateItemOut(BaseModel):
+    """One track item with its latest update (for basket digest)."""
+    item: str
+    update: Optional[str] = None
+    last_checked: Optional[str] = None
+
+
 class TradingDigestItemOut(BaseModel):
     """Trading-oriented digest for one theme (basket view)."""
     prevailing: Optional[str] = None
@@ -337,6 +368,8 @@ class TradingDigestItemOut(BaseModel):
     worries: Optional[str] = None
     trade_ideas: list[TradeIdeaOut] = Field(default_factory=list)
     related_news: list[RelatedNewsItemOut] = Field(default_factory=list)
+    track_items: list[str] = Field(default_factory=list)
+    track_updates: list[TrackUpdateItemOut] = Field(default_factory=list)
 
 
 class NarrativeShiftOut(BaseModel):

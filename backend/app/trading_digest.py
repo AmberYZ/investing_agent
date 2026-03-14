@@ -8,7 +8,7 @@ import datetime as dt
 import json
 import logging
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -40,6 +40,33 @@ def _theme_primary_symbol(db: Session, theme_id: int) -> str | None:
         .first()
     )
     return row[0] if row else None
+
+
+def _other_themes_narratives(
+    db: Session, current_theme_id: int, since: dt.date, all_themes: list[Theme]
+) -> str:
+    """Fetch recent narrative statements from other themes for cross-theme context."""
+    other_ids = [t.id for t in all_themes if t.id != current_theme_id]
+    if not other_ids:
+        return ""
+    doc_date = _doc_date()
+    rows = (
+        db.query(Narrative.statement, Theme.canonical_label)
+        .join(Theme, Theme.id == Narrative.theme_id)
+        .join(Evidence, Evidence.narrative_id == Narrative.id)
+        .join(Document, Document.id == Evidence.document_id)
+        .filter(
+            Narrative.theme_id.in_(other_ids),
+            doc_date >= since,
+        )
+        .distinct()
+        .limit(30)
+        .all()
+    )
+    if not rows:
+        return ""
+    lines = [f"- [{label}] {stmt}" for stmt, label in rows]
+    return "\n".join(lines)
 
 
 def _theme_instruments_all(db: Session, theme_id: int) -> list[str]:
@@ -296,6 +323,7 @@ def generate_theme_trading_digests(
     db: Session,
     theme_id: Optional[int] = None,
     theme_ids: Optional[list[int]] = None,
+    progress_callback: Optional[Callable[[str, int, int, str, Optional[dict]], None]] = None,
 ) -> int:
     """
     Generate LLM trading digest for themes (prevailing, what_changed, what_market_waiting, worries, trade_ideas).
@@ -317,6 +345,8 @@ def generate_theme_trading_digests(
     since = dt.date.today() - dt.timedelta(days=30)
     doc_date = _doc_date()
     count = 0
+    total = len(themes)
+    processed = 0
 
     for theme in themes:
         recent_narratives = (
@@ -329,6 +359,10 @@ def generate_theme_trading_digests(
         )
         if not recent_narratives:
             continue
+
+        processed += 1
+        if progress_callback:
+            progress_callback("theme", processed, total, theme.canonical_label, None)
 
         narrative_lines = []
         for n in recent_narratives[:30]:
@@ -363,18 +397,30 @@ def generate_theme_trading_digests(
         if instruments:
             metrics_str += f"\nInstruments in the user's list for this theme (give ideas per symbol when multiple): {', '.join(instruments)}"
 
+        # Cross-theme context: other themes' recent narratives (may impact this theme)
+        other_themes_narratives = _other_themes_narratives(db, theme.id, since, themes)
+        other_context = ""
+        if other_themes_narratives:
+            other_context = (
+                "\n\nNarratives from OTHER themes (may be relevant to this one):\n"
+                + other_themes_narratives
+                + "\n\nConsider whether any development in another theme could impact this theme."
+            )
+
         user_prompt = (
             f"Theme: {theme.canonical_label}\n"
             f"Description: {theme.description or 'N/A'}\n\n"
             f"Market context: {metrics_str}\n\n"
             f"Narratives from the past 30 days:\n"
-            + "\n".join(narrative_lines)
+            + "\n".join(narrative_lines[:50])
+            + other_context
             + "\n\n"
-            "You are producing a trading-oriented digest. Return ONLY a valid JSON object (no markdown, no code fence) with these keys:\n"
-            "- prevailing (string): What are the main themes or topics talked about under this basket? 2-4 sentences.\n"
-            "- what_changed (string): What has changed recently? New developments, tone shifts. 2-3 sentences.\n"
-            "- what_market_waiting (string): What is the market waiting to see? Catalysts, results, risks, or conditions that would make it more bearish or bullish. 2-3 sentences.\n"
-            "- worries (string or null): What are people worrying about, if anything? One or two sentences, or null if not relevant.\n"
+            "You are producing a trading-oriented digest for investors. Be PRECISE and SPECIFIC—avoid generic phrasing. "
+            "Return ONLY a valid JSON object (no markdown, no code fence) with these keys:\n"
+            "- prevailing (string): Main themes/topics. 2-4 sentences. Be specific.\n"
+            "- what_changed (string): The MOST CRUCIAL changes recently—key catalysts, concrete developments. Not generic. 2-3 sentences. Wrap the 1-2 most important phrases in **double asterisks**.\n"
+            "- what_market_waiting (string): What the market is waiting for or worrying about—specific catalysts, dates, conditions. Investor-centric. 2-3 sentences. Wrap key items in **double asterisks**.\n"
+            "- worries (string or null): Specific worries if any. One or two sentences, or null. Wrap key risks in **double asterisks**.\n"
             "- trade_ideas (array): 0 to 5 actionable trade ideas when they exist. Each item: {\"symbol\": \"TICKER or null if theme-level\", \"label\": \"short tag\", \"rationale\": \"precise actionable description\"}. "
             "If the best course of action is not to trade (e.g. wait, no edge, too much uncertainty), return an empty array; do not force ideas. "
             "When the theme has multiple instruments in the user's list, prefer at least one idea per relevant symbol where it makes sense; do not give vague basket-level ideas when symbols are listed. "
@@ -460,8 +506,50 @@ def generate_theme_trading_digests(
         count += 1
         logger.info("Generated trading digest for theme %s (%s)", theme.id, theme.canonical_label)
 
+        # Update track items: EODHD-only agent (classify → fetch APIs → process)
+        if theme.track_items:
+            track_items_list = [s.strip() for s in theme.track_items.split("\n") if s.strip()]
+            if track_items_list:
+                if progress_callback:
+                    progress_callback("track_items", processed, total, theme.canonical_label, None)
+                _update_theme_track_items_eodhd(
+                    db, theme, track_items_list, primary_symbol, progress_callback, processed, total
+                )
+
         if getattr(settings, "llm_delay_after_request_seconds", 0) > 0:
             time.sleep(settings.llm_delay_after_request_seconds)
 
     db.commit()
     return count
+
+
+def _update_theme_track_items_eodhd(
+    db: Session,
+    theme: Theme,
+    track_items: list[str],
+    primary_symbol: str | None,
+    progress_callback: Optional[Callable[..., None]] = None,
+    processed: int = 0,
+    total: int = 1,
+) -> None:
+    """Update track items using EODHD APIs only (agent: classify → fetch → process)."""
+    from app.track_items_eodhd import update_theme_track_items_eodhd
+
+    def cb(api_name: str, action: str, theme_label: Optional[str]) -> None:
+        if progress_callback:
+            progress_callback(
+                "track_items",
+                processed,
+                total,
+                theme.canonical_label,
+                {"api": api_name, "action": action},
+            )
+
+    results = update_theme_track_items_eodhd(
+        theme.canonical_label,
+        track_items,
+        primary_symbol,
+        progress_callback=cb,
+    )
+    theme.track_updates = json.dumps(results)
+    db.flush()

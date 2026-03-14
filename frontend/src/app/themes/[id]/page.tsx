@@ -6,6 +6,8 @@ import { ThemeChartAndDayDocs } from "./ThemeChartAndDayDocs";
 import { ThemeConfidenceChart } from "./ThemeConfidenceChart";
 import { ThemeInstruments } from "./ThemeInstruments";
 import { ThemeNotes } from "./ThemeNotes";
+import { ThemeTrackItems } from "./ThemeTrackItems";
+import { ThemeTrackedResultsBox } from "./ThemeTrackedResultsBox";
 import { ThemeStanceChart } from "./ThemeStanceChart";
 import { ThemeNarrativesClient } from "./ThemeNarrativesClient";
 
@@ -284,6 +286,7 @@ export default async function ThemePage(
             <div className="flex flex-wrap items-center gap-2">
               <FollowThemeButtonWrapper themeId={theme.id} />
               <ThemeNotes themeId={id} />
+              <ThemeTrackItems themeId={id} />
               <GroupThemeIntoParent
                 themeId={theme.id}
                 themeLabel={theme.canonical_label}
@@ -324,6 +327,7 @@ export default async function ThemePage(
         {/* 2) Two columns: left = charts + instruments, right = narratives */}
         <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-stretch">
           <div className="min-w-0 space-y-4">
+            <ThemeTrackedResultsBox themeId={id} />
             <ThemeInstruments themeId={id} months={months} compactLayout />
             <ThemeChartAndDayDocs
               metrics={metrics ?? []}

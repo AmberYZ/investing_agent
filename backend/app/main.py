@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import distinct, func, update
 from sqlalchemy.exc import IntegrityError
@@ -89,6 +90,7 @@ from app.schemas import (
     BatchNarrativeSummaryItemOut,
     RelatedNewsItemOut,
     TradeIdeaOut,
+    TrackUpdateItemOut,
     TradingDigestItemOut,
     ThemeMetricsByConfidenceOut,
     ThemeMetricsByStanceOut,
@@ -115,6 +117,10 @@ from app.schemas import (
     ThemeIdLabelOut,
     ThemeNotesOut,
     ThemeNotesUpdate,
+    ThemeTrackItemsOut,
+    ThemeTrackItemsUpdate,
+    ThemeTrackResultsOut,
+    ThemeTrackUpdateItemOut,
     ThemeOut,
     ThemeWithNarrativesOut,
     ThemeParentUpdate,
@@ -1113,6 +1119,27 @@ def get_basket_trading_digest(
             except Exception:
                 pass
         related_news: list[RelatedNewsItemOut] = []
+        track_items_list: list[str] = []
+        track_updates_list: list[TrackUpdateItemOut] = []
+        theme_row = db.query(Theme).filter(Theme.id == tid).one_or_none()
+        if theme_row:
+            if theme_row.track_items:
+                track_items_list = [s.strip() for s in theme_row.track_items.split("\n") if s.strip()]
+            if theme_row.track_updates:
+                try:
+                    raw_tu = _json.loads(theme_row.track_updates)
+                    if isinstance(raw_tu, list):
+                        for u in raw_tu:
+                            if isinstance(u, dict) and u.get("item"):
+                                track_updates_list.append(
+                                    TrackUpdateItemOut(
+                                        item=str(u["item"]),
+                                        update=u.get("update"),
+                                        last_checked=u.get("last_checked"),
+                                    )
+                                )
+                except Exception:
+                    pass
         if include_news:
             primary_symbol = primary_by_id.get(tid)
             if primary_symbol:
@@ -1135,6 +1162,8 @@ def get_basket_trading_digest(
             worries=row.worries if row else None,
             trade_ideas=trade_ideas,
             related_news=related_news,
+            track_items=track_items_list,
+            track_updates=track_updates_list,
         )
     return out
 
@@ -1563,6 +1592,76 @@ def patch_theme_notes(theme_id: int, body: ThemeNotesUpdate, db: Session = Depen
     db.commit()
     db.refresh(theme)
     return ThemeNotesOut(content=theme.user_notes)
+
+
+def _parse_track_items(raw: str | None, items: list[str] | None) -> list[str]:
+    """Normalize user input into list of non-empty trimmed items (bullets)."""
+    if items is not None:
+        out = [s.strip() for s in items if s and s.strip()]
+        return out
+    if raw is None or not raw.strip():
+        return []
+    # Split by newlines and commas, trim, dedupe empty
+    parts: list[str] = []
+    for line in raw.replace(",", "\n").split("\n"):
+        s = line.strip()
+        if s and s not in parts:
+            parts.append(s)
+    return parts
+
+
+@app.get("/themes/{theme_id}/track-items", response_model=ThemeTrackItemsOut)
+def get_theme_track_items(theme_id: int, db: Session = Depends(get_db)):
+    """Get user-defined track items for this theme (bullet list)."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    items = []
+    if theme.track_items:
+        items = [s.strip() for s in theme.track_items.split("\n") if s.strip()]
+    return ThemeTrackItemsOut(items=items)
+
+
+@app.patch("/themes/{theme_id}/track-items", response_model=ThemeTrackItemsOut)
+def patch_theme_track_items(theme_id: int, body: ThemeTrackItemsUpdate, db: Session = Depends(get_db)):
+    """Update track items. Accept raw text or items array; stored as newline-separated."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    items = _parse_track_items(body.raw, body.items)
+    theme.track_items = "\n".join(items) if items else None
+    db.commit()
+    db.refresh(theme)
+    return ThemeTrackItemsOut(items=items)
+
+
+@app.get("/themes/{theme_id}/track-results", response_model=ThemeTrackResultsOut)
+def get_theme_track_results(theme_id: int, db: Session = Depends(get_db)):
+    """Get track items and their latest updates (from digest refresh)."""
+    theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    items = []
+    if theme.track_items:
+        items = [s.strip() for s in theme.track_items.split("\n") if s.strip()]
+    updates_list: list[ThemeTrackUpdateItemOut] = []
+    if theme.track_updates:
+        try:
+            import json as _json
+            raw = _json.loads(theme.track_updates)
+            if isinstance(raw, list):
+                for u in raw:
+                    if isinstance(u, dict) and u.get("item"):
+                        updates_list.append(
+                            ThemeTrackUpdateItemOut(
+                                item=str(u["item"]),
+                                update=u.get("update"),
+                                last_checked=u.get("last_checked"),
+                            )
+                        )
+        except Exception:
+            pass
+    return ThemeTrackResultsOut(items=items, updates=updates_list)
 
 
 @app.patch("/themes/{theme_id}", response_model=ThemeOut)
@@ -3317,3 +3416,68 @@ def trigger_trading_digests(
         }
     finally:
         db.close()
+
+
+@app.get("/admin/generate-trading-digests/stream")
+def stream_trading_digests(
+    followed_only: bool = Query(True, description="If true, generate only for followed themes."),
+    theme_id: Optional[int] = Query(None, description="If set, generate only for this theme (single basket refresh)."),
+):
+    """Stream progress while generating trading digests (SSE)."""
+    import json as _json
+    import queue
+
+    from app.db import SessionLocal
+    from app.trading_digest import generate_theme_trading_digests
+
+    if theme_id is not None:
+        theme_ids_arg = None
+        theme_id_arg = theme_id
+    elif followed_only:
+        ids = get_followed_theme_ids()
+        theme_ids_arg = ids if ids else None
+        theme_id_arg = None
+    else:
+        theme_ids_arg = None
+        theme_id_arg = None
+
+    progress_queue: queue.Queue = queue.Queue()
+    result_holder: list[int] = []
+
+    def progress_cb(step: str, current: int, total: int, label: str, detail: Optional[dict] = None) -> None:
+        payload: dict = {"step": step, "current": current, "total": total, "label": label}
+        if detail:
+            payload["api"] = detail.get("api")
+            payload["action"] = detail.get("action")
+        progress_queue.put(payload)
+
+    def run() -> None:
+        db = SessionLocal()
+        try:
+            count = generate_theme_trading_digests(
+                db, theme_id=theme_id_arg, theme_ids=theme_ids_arg, progress_callback=progress_cb
+            )
+            result_holder.append(count)
+        finally:
+            db.close()
+        progress_queue.put(None)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+
+    def event_stream():
+        while True:
+            try:
+                msg = progress_queue.get(timeout=2)
+            except queue.Empty:
+                continue
+            if msg is None:
+                yield f"data: {_json.dumps({'step': 'done', 'count': result_holder[0] if result_holder else 0})}\n\n"
+                break
+            yield f"data: {_json.dumps(msg)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

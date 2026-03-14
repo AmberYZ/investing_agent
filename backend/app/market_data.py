@@ -377,6 +377,132 @@ def fetch_news_for_ticker(symbol: str, limit: int = 10) -> dict[str, Any]:
     return {"items": items, "message": None}
 
 
+def fetch_fundamentals_filtered(symbol: str, sections: list[str]) -> dict[str, Any]:
+    """
+    EODHD Fundamentals API with filter: fetch only requested sections.
+    Sections: General, Highlights, Valuation, SharesStats, Technicals, SplitsDividends,
+    AnalystRatings, Holders, InsiderTransactions, Earnings, Financials.
+    Returns {"data": {...}, "message": None or error string}.
+    """
+    global _last_request_time
+    symbol = (symbol or "").strip().upper()
+    out: dict[str, Any] = {"data": None, "message": None}
+    if not symbol:
+        out["message"] = "Symbol required."
+        return out
+    api_key = (getattr(settings, "eodhd_api_key", "") or "").strip()
+    if not api_key:
+        out["message"] = "EODHD API key not set."
+        return out
+    filter_val = ",".join(s for s in sections if s)
+    if not filter_val:
+        filter_val = "General,Highlights,Valuation,Earnings,AnalystRatings"
+    eodhd_symbol = _to_eodhd_symbol(symbol)
+    with _lock:
+        elapsed = time.monotonic() - _last_request_time
+        if elapsed < _min_seconds_between_requests():
+            time.sleep(_min_seconds_between_requests() - elapsed)
+        _last_request_time = time.monotonic()
+    try:
+        import httpx
+        with httpx.Client(timeout=25.0) as client:
+            r = client.get(
+                f"{BASE_URL}/fundamentals/{eodhd_symbol}",
+                params={"api_token": api_key, "fmt": "json", "filter": filter_val},
+            )
+            r.raise_for_status()
+            out["data"] = r.json()
+    except Exception as e:
+        out["message"] = str(e)
+        if _is_rate_limit_error(out["message"]):
+            out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
+    return out
+
+
+def fetch_quarterly_income_statement(symbol: str) -> dict[str, Any]:
+    """
+    EODHD Fundamentals with filter Financials::Income_Statement::quarterly.
+    Returns {"quarters": [{"date": "YYYY-MM-DD", "revenue": float, "net_income": float, "gross_profit": float?, "profit_margin_pct": float?}], "message": None or str}.
+    """
+    global _last_request_time
+    symbol = (symbol or "").strip().upper()
+    out: dict[str, Any] = {"quarters": [], "message": None}
+    if not symbol:
+        out["message"] = "Symbol required."
+        return out
+    api_key = (getattr(settings, "eodhd_api_key", "") or "").strip()
+    if not api_key:
+        out["message"] = "EODHD API key not set."
+        return out
+    eodhd_symbol = _to_eodhd_symbol(symbol)
+    with _lock:
+        elapsed = time.monotonic() - _last_request_time
+        if elapsed < _min_seconds_between_requests():
+            time.sleep(_min_seconds_between_requests() - elapsed)
+        _last_request_time = time.monotonic()
+    try:
+        import httpx
+        with httpx.Client(timeout=25.0) as client:
+            r = client.get(
+                f"{BASE_URL}/fundamentals/{eodhd_symbol}",
+                params={
+                    "api_token": api_key,
+                    "fmt": "json",
+                    "filter": "Financials::Income_Statement::quarterly",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        out["message"] = str(e)
+        if _is_rate_limit_error(out["message"]):
+            out["message"] = "Too many requests from the data provider. Please wait a few minutes and try again."
+        return out
+    financials = data if isinstance(data, dict) else {}
+    income = (financials.get("Financials") or {}).get("Income_Statement") or {}
+    quarterly = income.get("quarterly") if isinstance(income, dict) else {}
+    if not isinstance(quarterly, dict):
+        out["message"] = "No quarterly income statement in EODHD for this symbol."
+        return out
+    for date_key, row in sorted(quarterly.items(), reverse=True):
+        if not isinstance(row, dict):
+            continue
+        revenue = row.get("totalRevenue") or row.get("revenue") or row.get("Revenue")
+        net_income = row.get("netIncome") or row.get("incomeNet") or row.get("netIncomeCommonStockholders")
+        gross = row.get("grossProfit")
+        revenue_f = None
+        if revenue not in (None, "", "-"):
+            try:
+                revenue_f = float(revenue)
+            except (TypeError, ValueError):
+                pass
+        net_f = None
+        if net_income not in (None, "", "-"):
+            try:
+                net_f = float(net_income)
+            except (TypeError, ValueError):
+                pass
+        gross_f = None
+        if gross not in (None, "", "-"):
+            try:
+                gross_f = float(gross)
+            except (TypeError, ValueError):
+                pass
+        margin_pct = None
+        if revenue_f and revenue_f > 0 and net_f is not None:
+            margin_pct = round(net_f / revenue_f * 100, 1)
+        entry = {
+            "date": (str(date_key))[:10],
+            "revenue": revenue_f,
+            "net_income": net_f,
+            "gross_profit": gross_f,
+            "profit_margin_pct": margin_pct,
+        }
+        out["quarters"].append(entry)
+    out["quarters"] = out["quarters"][:12]  # last 12 quarters
+    return out
+
+
 def compute_period_returns(prices: list[dict[str, Any]]) -> dict[str, float | None]:
     """
     Compute 1M, 3M, YTD, 6M % return from a sorted-by-date (asc) prices list.

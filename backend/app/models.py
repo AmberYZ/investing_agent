@@ -94,6 +94,10 @@ class Theme(Base):
     created_by: Mapped[str] = mapped_column(String(32), default="system", index=True)
     # User-editable notes for this theme (single note per theme in MVP).
     user_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # User-defined things to track (one per line; e.g. "Q3 earnings", "FDA decision").
+    track_items: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # JSON: [{"item": str, "update": str, "last_checked": str}] from last digest refresh.
+    track_updates: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Embedding of canonical_label for semantic similarity (theme deduplication).
     embedding: Mapped[Optional[List[float]]] = mapped_column(JSON, nullable=True)
     # Optional parent theme for hierarchy (this theme is a sub-theme of parent).

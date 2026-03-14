@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { FollowThemeButton } from "../components/FollowThemeButton";
 import { ThemeInstruments } from "../themes/[id]/ThemeInstruments";
 
@@ -197,6 +197,7 @@ type NarrativeItem = {
 /** Trading digest for one theme (from GET /basket/trading-digest) */
 type TradeIdeaItem = { symbol?: string | null; label?: string | null; rationale: string };
 type RelatedNewsItem = { title: string; url?: string | null; time?: string | null; source?: string | null; sentiment?: string | null };
+type TrackUpdateItem = { item: string; update?: string | null; last_checked?: string | null };
 type TradingDigestItem = {
   prevailing?: string | null;
   what_changed?: string | null;
@@ -204,7 +205,28 @@ type TradingDigestItem = {
   worries?: string | null;
   trade_ideas: TradeIdeaItem[];
   related_news: RelatedNewsItem[];
+  track_items?: string[];
+  track_updates?: TrackUpdateItem[];
 };
+
+/** Render text with **bold** phrases as <strong> */
+function renderWithBold(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  let remaining = text;
+  let key = 0;
+  while (remaining.length > 0) {
+    const match = remaining.match(/\*\*([^*]+)\*\*/);
+    if (!match) {
+      parts.push(<span key={key++}>{remaining}</span>);
+      break;
+    }
+    const idx = remaining.indexOf(match[0]);
+    if (idx > 0) parts.push(<span key={key++}>{remaining.slice(0, idx)}</span>);
+    parts.push(<strong key={key++} className="font-semibold text-zinc-900 dark:text-zinc-100">{match[1]}</strong>);
+    remaining = remaining.slice(idx + match[0].length);
+  }
+  return <>{parts}</>;
+}
 
 function fmtPct(v: number | null | undefined): string {
   if (v == null) return "—";
@@ -251,20 +273,33 @@ function themeSentimentSummary(item: BasketItem, tickers: InstrumentSummary[]): 
 /** Fetch all narratives that have evidence on the theme's most recent activity date */
 const NARRATIVES_QUERY = "on_latest_date=true";
 
+type DigestProgressState = {
+  current: number;
+  total: number;
+  label: string;
+  api?: string;
+  action?: string;
+} | null;
+
 function ThemeSection({
   item,
   onUnfollowRefetch,
+  onRefreshDigest,
+  onProgressUpdate,
   metricsLoading = false,
   digest = null,
   digestLoading = false,
 }: {
   item: BasketItem;
   onUnfollowRefetch?: () => void;
+  onRefreshDigest?: () => Promise<void>;
+  onProgressUpdate?: (p: DigestProgressState) => void;
   metricsLoading?: boolean;
   digest?: TradingDigestItem | null;
   digestLoading?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [tickers, setTickers] = useState<InstrumentSummary[]>([]);
   const [tickersLoading, setTickersLoading] = useState(false);
   const [priceBlink, setPriceBlink] = useState<Record<string, boolean>>({});
@@ -316,9 +351,59 @@ function ThemeSection({
 
   const sentiment = expanded ? themeSentimentSummary(item, tickers) : null;
 
+  const handleRefreshTheme = useCallback(async () => {
+    if (refreshing || !onRefreshDigest) return;
+    setRefreshing(true);
+    onProgressUpdate?.(null);
+    try {
+      const es = new EventSource(`${API_BASE}/admin/generate-trading-digests/stream?followed_only=false&theme_id=${item.id}`);
+      await new Promise<void>((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          es.close();
+          reject(new Error("Refresh timed out"));
+        }, 5 * 60 * 1000);
+        es.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.step === "theme" || data.step === "track_items") {
+              onProgressUpdate?.({
+                current: data.current ?? 0,
+                total: data.total ?? 1,
+                label: data.label ?? "",
+                api: data.api,
+                action: data.action,
+              });
+            } else if (data.step === "done") {
+              clearTimeout(timeoutId);
+              es.close();
+              resolve();
+            }
+          } catch {
+            // ignore
+          }
+        };
+        es.onerror = () => {
+          clearTimeout(timeoutId);
+          es.close();
+          reject(new Error("Stream connection failed"));
+        };
+      });
+      await onRefreshDigest();
+    } catch {
+      // ignore; onRefreshDigest will refetch
+    } finally {
+      setRefreshing(false);
+      onProgressUpdate?.(null);
+    }
+  }, [item.id, onRefreshDigest, onProgressUpdate, refreshing]);
+
   const hasDigestSummary = digest && (digest.prevailing || digest.what_changed || digest.what_market_waiting || digest.worries);
   const hasTradeIdeas = digest?.trade_ideas && digest.trade_ideas.length > 0;
   const hasRelatedNews = digest?.related_news && digest.related_news.length > 0;
+  const trackItems = digest?.track_items ?? [];
+  const trackUpdates = digest?.track_updates ?? [];
+  const hasTrackItems = trackItems.length > 0;
+  const updatesByItem = new Map(trackUpdates.map((u) => [u.item, u]));
 
   return (
     <section className="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
@@ -361,13 +446,31 @@ function ThemeSection({
               </p>
             )}
           </div>
-          <button
-            type="button"
-            onClick={() => setExpanded(!expanded)}
-            className="shrink-0 rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
-          >
-            {expanded ? "Hide tickers" : `${item.instrument_count} ticker${item.instrument_count !== 1 ? "s" : ""} ▼`}
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {onRefreshDigest && (
+              <button
+                type="button"
+                onClick={handleRefreshTheme}
+                disabled={refreshing}
+                title="Refresh digest for this theme"
+                className="rounded-lg border border-zinc-300 bg-zinc-50 p-1.5 text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={refreshing ? "animate-spin" : ""}>
+                  <path d="M21 3v6h-6" />
+                  <path d="M3 21v-6h6" />
+                  <path d="M21 3l-9 9" />
+                  <path d="M3 21l9-9" />
+                </svg>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setExpanded(!expanded)}
+              className="rounded-lg border border-zinc-300 bg-zinc-50 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+            >
+              {expanded ? "Hide tickers" : `${item.instrument_count} ticker${item.instrument_count !== 1 ? "s" : ""} ▼`}
+            </button>
+          </div>
         </div>
 
         {/* Chart (left) + Text summary (right) — full theme page chart UI: Single/Basket, tickers, overlays */}
@@ -386,25 +489,25 @@ function ThemeSection({
                   {digest!.prevailing && (
                     <div>
                       <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Prevailing</h3>
-                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap line-clamp-4">{digest!.prevailing}</p>
+                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{renderWithBold(digest!.prevailing)}</p>
                     </div>
                   )}
                   {digest!.what_changed && (
                     <div>
                       <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">What changed recently</h3>
-                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap line-clamp-3">{digest!.what_changed}</p>
+                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{renderWithBold(digest!.what_changed)}</p>
                     </div>
                   )}
                   {digest!.what_market_waiting && (
                     <div>
                       <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">What the market is waiting for</h3>
-                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap line-clamp-3">{digest!.what_market_waiting}</p>
+                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{renderWithBold(digest!.what_market_waiting)}</p>
                     </div>
                   )}
                   {digest!.worries && (
                     <div>
                       <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Worries</h3>
-                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap line-clamp-3">{digest!.worries}</p>
+                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{renderWithBold(digest!.worries)}</p>
                     </div>
                   )}
                   <Link href={`/themes/${item.id}`} className="mt-auto text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-400">
@@ -467,6 +570,40 @@ function ThemeSection({
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {/* Tracked results — things user wants to track */}
+        {hasTrackItems && (
+          <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
+            <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Tracked results</h3>
+            <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+              Updates from Refresh digest. Add items on the theme page.
+            </p>
+            <div className="mt-2 space-y-2">
+              {trackItems.map((item) => {
+                const update = updatesByItem.get(item);
+                return (
+                  <div key={item} className="rounded-lg border border-zinc-100 bg-zinc-50/50 p-2 dark:border-zinc-800 dark:bg-zinc-900/50">
+                    <div className="text-xs font-medium text-zinc-700 dark:text-zinc-300">{item}</div>
+                    {update?.update ? (
+                      <>
+                        <p className="mt-1 text-sm text-zinc-800 dark:text-zinc-200">{update.update}</p>
+                        {update.last_checked && (
+                          <p className="mt-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+                            Last checked: {update.last_checked}
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                        {trackUpdates.length > 0 ? "No update yet." : "Run Refresh digest to see updates."}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -739,26 +876,58 @@ export default function BasketPage() {
 
   const [digestRefreshMessage, setDigestRefreshMessage] = useState<string | null>(null);
 
+  const [digestProgress, setDigestProgress] = useState<{
+    current: number;
+    total: number;
+    label: string;
+    api?: string;
+    action?: string;
+  } | null>(null);
+
   const refreshDigest = useCallback(async () => {
     setDigestRefreshing(true);
     setDigestRefreshMessage(null);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000); // 10 min
+    setDigestProgress(null);
     try {
-      const res = await fetch(`${API_BASE}/admin/generate-trading-digests?followed_only=true`, {
-        method: "POST",
-        signal: controller.signal,
+      const es = new EventSource(`${API_BASE}/admin/generate-trading-digests/stream?followed_only=true`);
+      await new Promise<void>((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          es.close();
+          reject(new Error("Refresh timed out"));
+        }, 10 * 60 * 1000);
+        es.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.step === "theme" || data.step === "track_items") {
+              setDigestProgress({
+                current: data.current ?? 0,
+                total: data.total ?? 1,
+                label: data.label ?? "",
+                api: data.api,
+                action: data.action,
+              });
+            } else if (data.step === "done") {
+              clearTimeout(timeoutId);
+              es.close();
+              setDigestRefreshMessage(`Generated ${data.count ?? 0} digest(s).`);
+              resolve();
+            }
+          } catch {
+            // ignore parse errors
+          }
+        };
+        es.onerror = () => {
+          clearTimeout(timeoutId);
+          es.close();
+          reject(new Error("Stream connection failed"));
+        };
       });
-      clearTimeout(timeoutId);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.message ?? "Generate failed");
       await fetchTradingDigest();
-      setDigestRefreshMessage(data?.message ?? "Digests refreshed.");
     } catch (e) {
-      clearTimeout(timeoutId);
       setDigestRefreshMessage(e instanceof Error ? e.message : "Refresh failed");
     } finally {
       setDigestRefreshing(false);
+      setDigestProgress(null);
     }
   }, [fetchTradingDigest]);
 
@@ -850,6 +1019,24 @@ export default function BasketPage() {
               {showCreate ? "Cancel" : "Create theme"}
             </button>
           </div>
+          {digestProgress && digestProgress.total > 0 && (
+            <div className="mt-2 w-full max-w-md">
+              <div className="flex flex-col gap-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                <span>Updating theme {digestProgress.current}/{digestProgress.total}: {digestProgress.label}</span>
+                {(digestProgress.api || digestProgress.action) && (
+                  <span className="animate-pulse font-medium text-amber-600 dark:text-amber-400">
+                    {[digestProgress.api, digestProgress.action].filter(Boolean).join(" — ")}
+                  </span>
+                )}
+              </div>
+              <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
+                <div
+                  className="h-full rounded-full bg-zinc-600 dark:bg-zinc-400 transition-[width]"
+                  style={{ width: `${Math.min(100, (digestProgress.current / digestProgress.total) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
           {digestRefreshMessage && (
             <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400 max-w-xl">
               {digestRefreshMessage}
@@ -1042,6 +1229,8 @@ export default function BasketPage() {
                     key={item.id}
                     item={item}
                     onUnfollowRefetch={fetchBasket}
+                    onRefreshDigest={fetchTradingDigest}
+                    onProgressUpdate={setDigestProgress}
                     digest={digestByTheme[String(item.id)] ?? null}
                     digestLoading={digestLoading}
                     metricsLoading={metricsLoading.has(item.id)}
