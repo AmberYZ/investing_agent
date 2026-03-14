@@ -429,6 +429,62 @@ def compute_period_returns(prices: list[dict[str, Any]]) -> dict[str, float | No
     return out
 
 
+def compute_basket_period_returns(symbols: list[str], months: int = 6) -> dict[str, float | None]:
+    """
+    Compute 1M, 3M, YTD % return for a basket: normalized average of tickers (100 = each ticker's first close).
+    Same logic as frontend basket chart. Uses get_prices_and_valuation per symbol (cached).
+    Returns dict with pct_1m, pct_3m, pct_ytd (None if insufficient data).
+    """
+    out: dict[str, float | None] = {"pct_1m": None, "pct_3m": None, "pct_ytd": None}
+    if not symbols:
+        return out
+    # Build basket series: by date -> list of normalized values (100 = first close per symbol)
+    by_date: dict[str, list[float]] = {}
+    for sym in symbols:
+        sym = (sym or "").strip().upper()
+        if not sym:
+            continue
+        try:
+            data = get_prices_and_valuation(sym, months=months)
+            prices = data.get("prices") or []
+        except Exception:
+            continue
+        if not prices:
+            continue
+        try:
+            first_close = float(prices[0].get("close", 0))
+        except (TypeError, ValueError):
+            continue
+        if first_close <= 0:
+            continue
+        for p in prices:
+            d = (p.get("date") or "")[:10]
+            if not d:
+                continue
+            try:
+                close = float(p.get("close", 0))
+            except (TypeError, ValueError):
+                continue
+            norm = (close / first_close) * 100
+            if d not in by_date:
+                by_date[d] = []
+            by_date[d].append(norm)
+    if not by_date:
+        return out
+    # Basket series: date -> average of normalized values (same as frontend)
+    basket_prices = [
+        {"date": d, "close": sum(vals) / len(vals)}
+        for d, vals in sorted(by_date.items())
+    ]
+    if len(basket_prices) < 2:
+        return out
+    returns = compute_period_returns(basket_prices)
+    out["pct_1m"] = returns.get("pct_1m")
+    out["pct_3m"] = returns.get("pct_3m")
+    out["pct_ytd"] = returns.get("pct_ytd")
+    return out
+
+
 def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
     out: dict[str, Any] = {
         "symbol": symbol,

@@ -789,6 +789,26 @@ def _theme_primary_symbol(db: Session, theme_id: int) -> str | None:
     return str(val).strip() if val is not None and str(val).strip() else None
 
 
+def _theme_instrument_symbols(db: Session, theme_id: int) -> list[str]:
+    """All unique instrument symbols for this theme and its descendants (for basket avg)."""
+    theme_ids = _theme_and_descendant_ids(db, theme_id)
+    rows = (
+        db.query(ThemeInstrument.symbol)
+        .filter(ThemeInstrument.theme_id.in_(theme_ids))
+        .distinct()
+        .all()
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    for row in rows:
+        sym = (row[0] if hasattr(row, "__getitem__") else row)
+        s = str(sym).strip().upper() if sym else ""
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
 def _basket_metrics_from_cache(db: Session, theme_id: int) -> tuple[dict | None, dt.date | None]:
     """Return (cached basket metrics, snapshot_date) for this theme (latest daily snapshot) if available.
 
@@ -944,6 +964,7 @@ def get_basket_summary(
             row.primary_symbol = primary_symbol
         # Metrics: use cached daily snapshot only (no live EODHD on-demand).
         # If no snapshot exists yet, return theme row without metrics so the UI stays fast.
+        # 1M/3M/YTD: use basket (avg) returns when theme has instruments; otherwise from cache.
         if include_metrics and primary_symbol:
             metrics, snapshot_date = _basket_metrics_from_cache(db, tid)
             if not metrics:
@@ -953,9 +974,17 @@ def get_basket_summary(
             row.forward_pe = metrics.get("forward_pe")
             row.peg_ratio = metrics.get("peg_ratio")
             row.latest_rsi = metrics.get("latest_rsi")
-            row.pct_1m = metrics.get("pct_1m")
-            row.pct_3m = metrics.get("pct_3m")
-            row.pct_ytd = metrics.get("pct_ytd")
+            symbols = _theme_instrument_symbols(db, tid)
+            if symbols:
+                from app.market_data import compute_basket_period_returns
+                basket_returns = compute_basket_period_returns(symbols, months=6)
+                row.pct_1m = basket_returns.get("pct_1m")
+                row.pct_3m = basket_returns.get("pct_3m")
+                row.pct_ytd = basket_returns.get("pct_ytd")
+            else:
+                row.pct_1m = metrics.get("pct_1m")
+                row.pct_3m = metrics.get("pct_3m")
+                row.pct_ytd = metrics.get("pct_ytd")
             row.pct_6m = metrics.get("pct_6m")
             row.quarterly_earnings_growth_yoy = metrics.get("quarterly_earnings_growth_yoy")
             row.quarterly_revenue_growth_yoy = metrics.get("quarterly_revenue_growth_yoy")
@@ -982,7 +1011,7 @@ def get_basket_summary(
 
 @app.get("/themes/{theme_id}/basket-metrics", response_model=ThemeBasketMetricsOut)
 def get_theme_basket_metrics(theme_id: int, db: Session = Depends(get_db)):
-    """Metrics for this theme's primary ticker (for lazy-loaded basket). Call after GET /basket/summary?include_metrics=false."""
+    """Metrics for this theme (1M/3M/YTD from basket avg; rest from primary ticker cache). Call after GET /basket/summary?include_metrics=false."""
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
@@ -993,11 +1022,19 @@ def get_theme_basket_metrics(theme_id: int, db: Session = Depends(get_db)):
     metrics, snapshot_date = _basket_metrics_from_cache(db, theme_id)
     if not metrics:
         return ThemeBasketMetricsOut(theme_id=theme_id, primary_symbol=primary_symbol)
+    out = {k: v for k, v in metrics.items() if k in ThemeBasketMetricsOut.model_fields}
+    symbols = _theme_instrument_symbols(db, theme_id)
+    if symbols:
+        from app.market_data import compute_basket_period_returns
+        basket_returns = compute_basket_period_returns(symbols, months=6)
+        out["pct_1m"] = basket_returns.get("pct_1m")
+        out["pct_3m"] = basket_returns.get("pct_3m")
+        out["pct_ytd"] = basket_returns.get("pct_ytd")
     return ThemeBasketMetricsOut(
         theme_id=theme_id,
         primary_symbol=primary_symbol,
         market_data_as_of=snapshot_date.isoformat() if snapshot_date else None,
-        **{k: v for k, v in metrics.items() if k in ThemeBasketMetricsOut.model_fields},
+        **out,
     )
 
 

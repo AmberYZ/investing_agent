@@ -138,7 +138,7 @@ export function ThemeCardGrid({
   }, [list, readData, allDismissedAt]);
 
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
       {sortedList.map((t) => {
         const themeId = Number(t.id);
         const readAt = Number.isInteger(themeId) ? readData[themeId] : undefined;
@@ -148,16 +148,16 @@ export function ThemeCardGrid({
           <Link
             key={t.id}
             href={`/themes/${t.id}`}
-            className={`group relative rounded-xl border bg-white p-5 transition hover:bg-zinc-50 dark:bg-zinc-950 dark:hover:bg-zinc-900 ${
+            className={`group relative rounded-lg border bg-white p-3 transition hover:bg-zinc-50 dark:bg-zinc-950 dark:hover:bg-zinc-900 ${
               hasRecentActivity
                 ? "border-l-4 border-l-emerald-500 dark:border-l-emerald-400 border-zinc-200 dark:border-zinc-800"
                 : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-800 dark:hover:border-zinc-700"
             }`}
           >
-            <div className="absolute right-2 top-2 z-10 flex items-center gap-1">
+            <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1">
               {hasRecentActivity && (
                 <span
-                  className="h-2 w-2 rounded-full bg-emerald-500 dark:bg-emerald-400"
+                  className="h-1.5 w-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400"
                   title="Unread"
                   aria-hidden
                 />
@@ -169,19 +169,19 @@ export function ThemeCardGrid({
                 variant="compact"
               />
             </div>
-            <div className="flex items-center gap-2">
-              <div className="text-sm font-semibold">{t.canonical_label}</div>
+            <div className="flex items-center gap-2 pr-16">
+              <div className="text-xs font-semibold leading-tight">{t.canonical_label}</div>
             </div>
-            <div className="mt-2 text-xs text-zinc-600 dark:text-zinc-400 line-clamp-3">
+            <div className="mt-1 text-[11px] text-zinc-600 dark:text-zinc-400 line-clamp-2 leading-snug">
               {t.description ?? "—"}
             </div>
-            <div className="mt-3">
+            <div className="mt-2">
               <ThemeCardChart
                 id={t.id}
                 data={normalizeThemeData(t.id, metricsMap[t.id] ?? [], allDates)}
               />
             </div>
-            <div className="mt-3 flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400">
+            <div className="mt-1.5 flex items-center justify-between text-[11px] text-zinc-500 dark:text-zinc-400">
               <span className="group-hover:text-zinc-700 dark:group-hover:text-zinc-200">
                 View narratives →
               </span>

@@ -209,12 +209,15 @@ export function ThemeInstruments({
   themeId,
   months = 6,
   compactLayout,
+  embedded,
 }: {
   themeId: string;
   /** Time range in months (6 or 12) — drives price and historical PE chart range */
   months?: number;
   /** When true, omit top margin for use in grid layout */
   compactLayout?: boolean;
+  /** When true, render without section border/title for embedding in basket card (full chart UI: Single/Basket, tickers, overlays) */
+  embedded?: boolean;
 }) {
   const [instruments, setInstruments] = useState<ThemeInstrument[]>([]);
   const [loading, setLoading] = useState(true);
@@ -231,7 +234,7 @@ export function ThemeInstruments({
   const symbolSearchRef = useRef<HTMLDivElement>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [viewMode, setViewMode] = useState<"single" | "basket">("single");
+  const [viewMode, setViewMode] = useState<"single" | "basket">(embedded ? "basket" : "single");
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [quote, setQuote] = useState<InstrumentQuote | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
@@ -676,102 +679,113 @@ export function ThemeInstruments({
 
   const hasInstruments = dedupedInstruments.length > 0 || suggestions.length > 0 || fromDocSuggestions.length > 0;
 
+  const Wrapper = embedded ? "div" : "section";
+  const wrapperClassName = embedded
+    ? `${compactLayout ? "" : "mt-4"}`
+    : `rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950 ${compactLayout ? "" : "mt-8"}`;
+
   return (
-    <section
-      className={`rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950 ${compactLayout ? "" : "mt-8"}`}
-    >
-      <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">Related stocks & ETFs</h2>
-      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-        Add tickers, then view a single symbol or the basket (simple average of normalized prices). Data is cached to limit API calls.
-      </p>
+    <Wrapper className={wrapperClassName}>
+      {!embedded && (
+        <>
+          <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">Related stocks & ETFs</h2>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            Add tickers, then view a single symbol or the basket (simple average of normalized prices). Data is cached to limit API calls.
+          </p>
+        </>
+      )}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <div ref={symbolSearchRef} className="relative inline-block">
-          <input
-            type="text"
-            placeholder="Symbol (e.g. AAPL)"
-            value={addSymbol}
-            onChange={(e) => setAddSymbol(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key !== "Enter") return;
-              if (searchOpen && searchMatches.length > 0) {
-                e.preventDefault();
-                handleAddFromSearch(searchMatches[0]);
-              } else {
-                handleAdd();
-              }
-            }}
-            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-          />
-          {searchOpen && (searchMatches.length > 0 || searchLoading) && (
-            <ul
-              className="absolute left-0 top-full z-50 mt-1 max-h-48 w-72 overflow-auto rounded-lg border border-zinc-300 bg-white py-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
-              role="listbox"
-            >
-              {searchLoading ? (
-                <li className="px-3 py-2 text-sm text-zinc-500 dark:text-zinc-400">Searching…</li>
-              ) : (
-                searchMatches.map((m) => (
-                  <li
-                    key={`${m.symbol}-${m.region ?? ""}`}
-                    role="option"
-                    className="cursor-pointer px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      handleAddFromSearch(m);
-                    }}
-                  >
-                    <span className="font-medium text-zinc-900 dark:text-zinc-100">{m.symbol}</span>
-                    {m.name ? <span className="ml-2 text-zinc-500 dark:text-zinc-400">{m.name}</span> : null}
-                  </li>
-                ))
+      {!embedded && (
+        <>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <div ref={symbolSearchRef} className="relative inline-block">
+              <input
+                type="text"
+                placeholder="Symbol (e.g. AAPL)"
+                value={addSymbol}
+                onChange={(e) => setAddSymbol(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  if (searchOpen && searchMatches.length > 0) {
+                    e.preventDefault();
+                    handleAddFromSearch(searchMatches[0]);
+                  } else {
+                    handleAdd();
+                  }
+                }}
+                className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+              />
+              {searchOpen && (searchMatches.length > 0 || searchLoading) && (
+                <ul
+                  className="absolute left-0 top-full z-50 mt-1 max-h-48 w-72 overflow-auto rounded-lg border border-zinc-300 bg-white py-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+                  role="listbox"
+                >
+                  {searchLoading ? (
+                    <li className="px-3 py-2 text-sm text-zinc-500 dark:text-zinc-400">Searching…</li>
+                  ) : (
+                    searchMatches.map((m) => (
+                      <li
+                        key={`${m.symbol}-${m.region ?? ""}`}
+                        role="option"
+                        className="cursor-pointer px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          handleAddFromSearch(m);
+                        }}
+                      >
+                        <span className="font-medium text-zinc-900 dark:text-zinc-100">{m.symbol}</span>
+                        {m.name ? <span className="ml-2 text-zinc-500 dark:text-zinc-400">{m.name}</span> : null}
+                      </li>
+                    ))
+                  )}
+                </ul>
               )}
-            </ul>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={handleAdd}
-          disabled={adding || !addSymbol.trim()}
-          className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
-        >
-          Add
-        </button>
-        <button
-          type="button"
-          onClick={handleFindInDocuments}
-          disabled={fromDocsSuggestLoading}
-          className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
-        >
-          {fromDocsSuggestLoading ? "Scanning…" : "Find in documents"}
-        </button>
-        <button
-          type="button"
-          onClick={handleSuggest}
-          disabled={suggestLoading}
-          className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
-        >
-          {suggestLoading ? "Suggesting…" : "Suggest with AI"}
-        </button>
-      </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleAdd}
+              disabled={adding || !addSymbol.trim()}
+              className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              Add
+            </button>
+            <button
+              type="button"
+              onClick={handleFindInDocuments}
+              disabled={fromDocsSuggestLoading}
+              className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              {fromDocsSuggestLoading ? "Scanning…" : "Find in documents"}
+            </button>
+            <button
+              type="button"
+              onClick={handleSuggest}
+              disabled={suggestLoading}
+              className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              {suggestLoading ? "Suggesting…" : "Suggest with AI"}
+            </button>
+          </div>
 
-      <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-zinc-500 dark:text-zinc-400">
-        <span className="flex items-center gap-1">
-          <span className={`inline-block h-2.5 w-2.5 rounded border ${SOURCE_STYLES.manual}`} /> {SOURCE_LABELS.manual}
-        </span>
-        <span className="flex items-center gap-1">
-          <span className={`inline-block h-2.5 w-2.5 rounded border ${SOURCE_STYLES.from_documents}`} /> {SOURCE_LABELS.from_documents}
-        </span>
-        <span className="flex items-center gap-1">
-          <span className={`inline-block h-2.5 w-2.5 rounded border ${SOURCE_STYLES.llm_suggested}`} /> {SOURCE_LABELS.llm_suggested}
-        </span>
-      </div>
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+            <span className="flex items-center gap-1">
+              <span className={`inline-block h-2.5 w-2.5 rounded border ${SOURCE_STYLES.manual}`} /> {SOURCE_LABELS.manual}
+            </span>
+            <span className="flex items-center gap-1">
+              <span className={`inline-block h-2.5 w-2.5 rounded border ${SOURCE_STYLES.from_documents}`} /> {SOURCE_LABELS.from_documents}
+            </span>
+            <span className="flex items-center gap-1">
+              <span className={`inline-block h-2.5 w-2.5 rounded border ${SOURCE_STYLES.llm_suggested}`} /> {SOURCE_LABELS.llm_suggested}
+            </span>
+          </div>
+        </>
+      )}
 
       {loading ? (
-        <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+        <p className={embedded ? "text-sm text-zinc-500 dark:text-zinc-400" : "mt-3 text-sm text-zinc-500 dark:text-zinc-400"}>Loading…</p>
       ) : !hasInstruments ? (
-        <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
-          No tickers yet. Add one above or run &quot;Find in documents&quot; / &quot;Suggest with AI&quot;.
+        <p className={embedded ? "text-sm text-zinc-500 dark:text-zinc-400" : "mt-3 text-sm text-zinc-500 dark:text-zinc-400"}>
+          {embedded ? "No tickers in this theme. Add tickers on the theme page." : "No tickers yet. Add one above or run \"Find in documents\" / \"Suggest with AI\"."}
         </p>
       ) : (
         <>
@@ -1322,6 +1336,6 @@ export function ThemeInstruments({
           </div>
         </>
       )}
-    </section>
+    </Wrapper>
   );
 }

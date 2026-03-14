@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { FollowThemeButton } from "../components/FollowThemeButton";
+import { ThemeInstruments } from "../themes/[id]/ThemeInstruments";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+const BASKET_CHART_MONTHS = 6;
 
 type BasketItem = {
   id: number;
@@ -314,9 +316,14 @@ function ThemeSection({
 
   const sentiment = expanded ? themeSentimentSummary(item, tickers) : null;
 
+  const hasDigestSummary = digest && (digest.prevailing || digest.what_changed || digest.what_market_waiting || digest.worries);
+  const hasTradeIdeas = digest?.trade_ideas && digest.trade_ideas.length > 0;
+  const hasRelatedNews = digest?.related_news && digest.related_news.length > 0;
+
   return (
     <section className="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
       <div className="p-4">
+        {/* Header: title, follow, description, summary line, expand */}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
@@ -363,98 +370,105 @@ function ThemeSection({
           </button>
         </div>
 
-        {/* Trading digest - prevailing, what changed, catalysts, worries, trade ideas, related news */}
+        {/* Chart (left) + Text summary (right) — full theme page chart UI: Single/Basket, tickers, overlays */}
         <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
-          {digestLoading ? (
-            <p className="text-xs text-zinc-400 dark:text-zinc-500">Loading digest…</p>
-          ) : digest && (digest.prevailing || digest.what_changed || digest.what_market_waiting || digest.worries || (digest.trade_ideas?.length ?? 0) > 0 || (digest.related_news?.length ?? 0) > 0) ? (
-            <div className="space-y-4">
-              {digest.prevailing && (
-                <div>
-                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Prevailing</h3>
-                  <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{digest.prevailing}</p>
-                </div>
-              )}
-              {digest.what_changed && (
-                <div>
-                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">What changed recently</h3>
-                  <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{digest.what_changed}</p>
-                </div>
-              )}
-              {digest.what_market_waiting && (
-                <div>
-                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">What the market is waiting for</h3>
-                  <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{digest.what_market_waiting}</p>
-                </div>
-              )}
-              {digest.worries && (
-                <div>
-                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Worries</h3>
-                  <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap">{digest.worries}</p>
-                </div>
-              )}
-              {digest.trade_ideas && digest.trade_ideas.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Trade ideas</h3>
-                  <ul className="mt-1.5 space-y-2">
-                    {digest.trade_ideas.map((idea, i) => (
-                      <li key={i} className="text-sm text-zinc-700 dark:text-zinc-200">
-                        {idea.symbol && (
-                          <span className="font-medium text-zinc-800 dark:text-zinc-100">{idea.symbol}</span>
-                        )}
-                        {idea.symbol && idea.label && " · "}
-                        {idea.label && (
-                          <span className="font-medium text-zinc-800 dark:text-zinc-100">{idea.label}</span>
-                        )}
-                        {(idea.symbol || idea.label) && " — "}
-                        <span>{idea.rationale}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {digest.related_news && digest.related_news.length > 0 && (
-                <div>
-                  <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Related news</h3>
-                  <ul className="mt-1.5 space-y-1.5">
-                    {digest.related_news.map((news, i) => (
-                      <li key={i} className="text-sm">
-                        {news.url ? (
-                          <a href={news.url} target="_blank" rel="noopener noreferrer" className="text-zinc-700 dark:text-zinc-200 hover:underline line-clamp-2">
-                            {news.title}
-                          </a>
-                        ) : (
-                          <span className="text-zinc-700 dark:text-zinc-200 line-clamp-2">{news.title}</span>
-                        )}
-                        {(news.source ?? news.time) && (
-                          <span className="ml-1 text-[11px] text-zinc-400 dark:text-zinc-500">
-                            {[news.source, news.time].filter(Boolean).join(" · ")}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <Link
-                href={`/themes/${item.id}`}
-                className="inline-block text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-400"
-              >
-                View all narratives →
-              </Link>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_1fr]">
+            <div className="min-w-0">
+              <ThemeInstruments themeId={String(item.id)} months={BASKET_CHART_MONTHS} compactLayout embedded />
             </div>
-          ) : (
-            <>
-              <p className="text-xs text-zinc-400 dark:text-zinc-500">Digest will appear after the next daily run. Use &quot;Refresh digest&quot; above to generate now.</p>
-              <Link
-                href={`/themes/${item.id}`}
-                className="mt-2 inline-block text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-400"
-              >
-                View all narratives →
-              </Link>
-            </>
-          )}
+
+            {/* Text summary: prevailing, what changed, what market waiting, worries */}
+            <div className="flex flex-col gap-3">
+              {digestLoading ? (
+                <p className="text-xs text-zinc-400 dark:text-zinc-500">Loading digest…</p>
+              ) : hasDigestSummary ? (
+                <>
+                  {digest!.prevailing && (
+                    <div>
+                      <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Prevailing</h3>
+                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap line-clamp-4">{digest!.prevailing}</p>
+                    </div>
+                  )}
+                  {digest!.what_changed && (
+                    <div>
+                      <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">What changed recently</h3>
+                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap line-clamp-3">{digest!.what_changed}</p>
+                    </div>
+                  )}
+                  {digest!.what_market_waiting && (
+                    <div>
+                      <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">What the market is waiting for</h3>
+                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap line-clamp-3">{digest!.what_market_waiting}</p>
+                    </div>
+                  )}
+                  {digest!.worries && (
+                    <div>
+                      <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Worries</h3>
+                      <p className="mt-0.5 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap line-clamp-3">{digest!.worries}</p>
+                    </div>
+                  )}
+                  <Link href={`/themes/${item.id}`} className="mt-auto text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-400">
+                    View all narratives →
+                  </Link>
+                </>
+              ) : !digestLoading && !hasDigestSummary && !hasTradeIdeas && !hasRelatedNews ? (
+                <>
+                  <p className="text-xs text-zinc-400 dark:text-zinc-500">Digest will appear after the next daily run. Use &quot;Refresh digest&quot; above to generate now.</p>
+                  <Link href={`/themes/${item.id}`} className="mt-2 text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-400">
+                    View all narratives →
+                  </Link>
+                </>
+              ) : (
+                <Link href={`/themes/${item.id}`} className="mt-auto text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-400">
+                  View all narratives →
+                </Link>
+              )}
+            </div>
+          </div>
         </div>
+
+        {/* Trade ideas — below chart + summary */}
+        {hasTradeIdeas && (
+          <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
+            <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Trade ideas</h3>
+            <ul className="mt-1.5 space-y-2">
+              {digest!.trade_ideas!.map((idea, i) => (
+                <li key={i} className="text-sm text-zinc-700 dark:text-zinc-200">
+                  {idea.symbol && <span className="font-medium text-zinc-800 dark:text-zinc-100">{idea.symbol}</span>}
+                  {idea.symbol && idea.label && " · "}
+                  {idea.label && <span className="font-medium text-zinc-800 dark:text-zinc-100">{idea.label}</span>}
+                  {(idea.symbol || idea.label) && " — "}
+                  <span>{idea.rationale}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Related news — below trade ideas */}
+        {hasRelatedNews && (
+          <div className="mt-4 border-t border-zinc-100 pt-4 dark:border-zinc-800">
+            <h3 className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Related news</h3>
+            <ul className="mt-1.5 space-y-1.5">
+              {digest!.related_news!.map((news, i) => (
+                <li key={i} className="text-sm">
+                  {news.url ? (
+                    <a href={news.url} target="_blank" rel="noopener noreferrer" className="text-zinc-700 dark:text-zinc-200 hover:underline line-clamp-2">
+                      {news.title}
+                    </a>
+                  ) : (
+                    <span className="text-zinc-700 dark:text-zinc-200 line-clamp-2">{news.title}</span>
+                  )}
+                  {(news.source ?? news.time) && (
+                    <span className="ml-1 text-[11px] text-zinc-400 dark:text-zinc-500">
+                      {[news.source, news.time].filter(Boolean).join(" · ")}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {expanded && (
           <div className="mt-4 border-t border-zinc-200 pt-4 dark:border-zinc-800">

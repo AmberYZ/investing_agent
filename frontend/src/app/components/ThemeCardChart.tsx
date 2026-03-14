@@ -36,7 +36,7 @@ function ThemeCardChartInner({ data, id: chartId }: { data: ThemeMetric[]; id: n
   }, [chartData]);
 
   return (
-    <div className="h-12 w-full shrink-0 text-emerald-500 dark:text-emerald-400">
+    <div className="h-9 w-full shrink-0 text-emerald-500 dark:text-emerald-400">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={chartData} margin={{ top: 2, right: 2, bottom: 2, left: 2 }}>
           <defs>
