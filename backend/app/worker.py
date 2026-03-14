@@ -33,7 +33,7 @@ from app.models import (
     ThemeAlias,
     ThemeMergeReinforcement,
 )
-from app.storage.gcs import get_storage
+from app.storage import get_storage
 from app.settings import settings
 
 

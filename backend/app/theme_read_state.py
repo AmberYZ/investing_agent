@@ -9,8 +9,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
-_READ_STATE_FILE = _PROMPT_DIR / "theme_read_state.json"
+from app.settings import settings
+
+def _state_dir() -> Path:
+    if getattr(settings, "state_dir", None) and settings.state_dir.strip():
+        return Path(settings.state_dir.strip()).resolve()
+    return Path(__file__).resolve().parent / "prompts"
+
+_READ_STATE_FILE = _state_dir() / "theme_read_state.json"
 _MAX_ENTRIES = 500
 
 
@@ -27,7 +33,7 @@ def _load_raw() -> dict[str, str]:
 
 
 def _save_raw(data: dict[str, str]) -> None:
-    _PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+    _READ_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     _READ_STATE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 

@@ -15,6 +15,7 @@ venv/
 scripts/credentials.json
 scripts/token.json
 scripts/.gmail_ingest_state
+scripts/investing-agent-487410-4c19f2631bf3.json
 
 # Local artifacts
 dev.db

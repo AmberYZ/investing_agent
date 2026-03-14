@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import datetime as dt
 
-from app.settings import settings
 from app.storage.base import StorageBackend, StoredObject
 
 
 class GcsStorage(StorageBackend):
     def __init__(self, *, bucket: str, prefix: str):
-        from google.cloud import storage
+        try:
+            from google.cloud import storage
+        except ImportError as e:
+            raise ImportError(
+                "GCS storage requires google-cloud-storage. Install with: "
+                "pip install -r requirements.txt -r requirements-gcp.txt  (from backend/)"
+            ) from e
 
         self.client = storage.Client()
         self.bucket = self.client.bucket(bucket)
@@ -51,16 +56,4 @@ class GcsStorage(StorageBackend):
             expiration=dt.timedelta(seconds=expires_in),
             method="GET",
         )
-
-
-def get_storage() -> StorageBackend:
-    if settings.storage_backend == "local":
-        from app.storage.local import LocalStorage
-
-        return LocalStorage(settings.local_storage_dir)
-    if settings.storage_backend == "gcs":
-        if not settings.gcs_bucket:
-            raise ValueError("GCS_BUCKET is required when STORAGE_BACKEND=gcs")
-        return GcsStorage(bucket=settings.gcs_bucket, prefix=settings.gcs_prefix)
-    raise ValueError(f"Unknown STORAGE_BACKEND={settings.storage_backend}")
 

@@ -11,9 +11,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.settings import settings
 
-_PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
-_WATCH_DIRS_FILE = _PROMPT_DIR / "watch_dirs.json"
+def _state_dir() -> Path:
+    if getattr(settings, "state_dir", None) and settings.state_dir.strip():
+        return Path(settings.state_dir.strip()).resolve()
+    return Path(__file__).resolve().parent / "prompts"
+
+_WATCH_DIRS_FILE = _state_dir() / "watch_dirs.json"
 
 
 def _normalize_entry(entry: Any) -> tuple[str, str] | None:
@@ -70,7 +75,7 @@ def get_watch_dir_paths() -> list[str]:
 
 def set_watch_dirs(watch_dirs: list[dict[str, str]]) -> None:
     """Overwrite stored watch directories. Each item: {path, nickname?}. Sets config_updated_at."""
-    _PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+    _WATCH_DIRS_FILE.parent.mkdir(parents=True, exist_ok=True)
     normalized = []
     for e in watch_dirs:
         norm = _normalize_entry(e)

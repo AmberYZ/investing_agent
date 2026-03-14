@@ -147,7 +147,7 @@ from app.settings import settings
 from app.theme_merge import MergeOptions, compute_merge_candidates, execute_theme_merge
 from app.theme_clusters import compute_megathemes
 from app.worker import canonicalize_label, ensure_alias
-from app.storage.gcs import GcsStorage, get_storage
+from app.storage import GcsStorage, get_storage
 from app.followed_themes import get_followed_theme_ids, follow_theme, unfollow_theme, is_followed
 from app.theme_cleanup import delete_theme_cascade, remove_empty_unfollowed_themes
 
@@ -555,11 +555,20 @@ def ingest_file(
     digest = hashlib.sha256(data).hexdigest()
 
     storage = get_storage()
-    stored = storage.upload_bytes(
-        key=f"raw/{digest}_{file.filename or 'document.pdf'}",
-        data=data,
-        content_type=file.content_type or "application/pdf",
-    )
+    try:
+        stored = storage.upload_bytes(
+            key=f"raw/{digest}_{file.filename or 'document.pdf'}",
+            data=data,
+            content_type=file.content_type or "application/pdf",
+        )
+    except Exception as e:
+        msg = str(e)
+        if "403" in msg or "Forbidden" in msg or "Permission" in msg or "AccessDenied" in msg:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Storage upload failed (check GCS bucket permissions for your service account): {msg}",
+            )
+        raise HTTPException(status_code=502, detail=f"Storage upload failed: {msg}")
 
     parsed_modified: Optional[dt.datetime] = None
     if modified_at:

@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     gcs_bucket: str = ""
     gcs_prefix: str = "investing-agent"
     local_storage_dir: str = ".local_storage"
+    # Optional: directory for JSON state files (theme_read_state, followed_themes, watch_dirs).
+    # If set, state files are read/written here (e.g. cloud-synced folder). If empty, use backend/app/prompts.
+    state_dir: str = ""
 
     gcp_project: str = ""
     gcp_location: str = "us-central1"

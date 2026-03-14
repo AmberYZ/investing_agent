@@ -55,6 +55,16 @@ WATCH_DIR=/Users/bigoneamberzhang/Desktop/investing_agent_test
 
 The path must exist on disk. Restart the ingest client (or `./dev.sh`) after changing `.env`.
 
+### GCS bucket permissions (when `STORAGE_BACKEND=gcs`)
+
+If ingest or the watcher returns **500** or **502** when uploading files, the service account in `GOOGLE_APPLICATION_CREDENTIALS` likely cannot write to the bucket. Grant it access:
+
+1. **Google Cloud Console** → **Cloud Storage** → **Buckets** → open your bucket.
+2. Open the **Permissions** tab → **Grant access**.
+3. **New principals:** paste the service account email (e.g. `investing-agent@investing-agent-487410.iam.gserviceaccount.com` from the JSON key file’s `client_email`).
+4. **Role:** choose **Storage Object Admin** (or **Storage Object Creator** for create-only).
+5. Save. Restart the backend and try ingest again.
+
 ---
 
 ## 2. Frontend `.env.local`
