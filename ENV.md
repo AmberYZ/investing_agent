@@ -50,7 +50,7 @@ cp .env.example .env
 To use a specific folder (e.g. your desktop test folder), add this line with **no quotes** and **no spaces around `=`**:
 
 ```bash
-WATCH_DIR=/Users/bigoneamberzhang/Desktop/investing_agent_test
+WATCH_DIR=/Users/...
 ```
 
 The path must exist on disk. Restart the ingest client (or `./dev.sh`) after changing `.env`.

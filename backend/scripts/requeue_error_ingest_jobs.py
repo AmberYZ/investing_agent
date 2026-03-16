@@ -10,6 +10,7 @@ Run from the backend directory:
 """
 from __future__ import annotations
 
+import datetime as dt
 import sys
 from pathlib import Path
 
@@ -24,10 +25,14 @@ from app.models import IngestJob
 
 
 def requeue_error_jobs() -> int:
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
     with engine.begin() as conn:
         result = conn.execute(
             update(IngestJob)
-            .where(IngestJob.status == "error")
+            .where(
+                IngestJob.status == "error",
+                IngestJob.created_at >= cutoff,
+            )
             .values(
                 status="queued",
                 started_at=None,

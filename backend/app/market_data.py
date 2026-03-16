@@ -503,6 +503,72 @@ def fetch_quarterly_income_statement(symbol: str) -> dict[str, Any]:
     return out
 
 
+def get_latest_close(symbol: str) -> dict[str, Any]:
+    """
+    EODHD EOD API: fetch latest trading day close for a symbol.
+    Returns {"close": float, "date": "YYYY-MM-DD", "message": None or str}.
+    """
+    global _last_request_time
+    symbol = (symbol or "").strip().upper()
+    out: dict[str, Any] = {"close": None, "date": None, "message": None}
+    if not symbol:
+        out["message"] = "Symbol required."
+        return out
+    api_key = (getattr(settings, "eodhd_api_key", "") or "").strip()
+    if not api_key:
+        out["message"] = "EODHD API key not set."
+        return out
+    eodhd_symbol = _to_eodhd_symbol(symbol)
+    end = dt.date.today()
+    start = end - dt.timedelta(days=14)
+    with _lock:
+        elapsed = time.monotonic() - _last_request_time
+        if elapsed < _min_seconds_between_requests():
+            time.sleep(_min_seconds_between_requests() - elapsed)
+        _last_request_time = time.monotonic()
+    try:
+        import httpx
+        with httpx.Client(timeout=15.0) as client:
+            r = client.get(
+                f"{BASE_URL}/eod/{eodhd_symbol}",
+                params={
+                    "api_token": api_key,
+                    "fmt": "json",
+                    "from": start.isoformat(),
+                    "to": end.isoformat(),
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:
+        out["message"] = str(e)
+        return out
+    if not isinstance(data, list) or not data:
+        out["message"] = "No recent EOD data."
+        return out
+    candidates = []
+    for day in data:
+        if not isinstance(day, dict):
+            continue
+        close = day.get("adjusted_close") or day.get("close")
+        if close in (None, "", "-"):
+            continue
+        try:
+            date_str = (day.get("date") or "")[:10]
+            if date_str and float(close) > 0:
+                candidates.append({"date": date_str, "close": float(close)})
+        except (TypeError, ValueError):
+            continue
+    candidates.sort(key=lambda x: x["date"], reverse=True)
+    best = candidates[0] if candidates else None
+    if best:
+        out["close"] = best["close"]
+        out["date"] = best["date"]
+    else:
+        out["message"] = "No valid close in EOD data."
+    return out
+
+
 def compute_period_returns(prices: list[dict[str, Any]]) -> dict[str, float | None]:
     """
     Compute 1M, 3M, YTD, 6M % return from a sorted-by-date (asc) prices list.

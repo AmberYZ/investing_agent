@@ -1101,6 +1101,7 @@ export function ThemeInstruments({
                               <ReferenceLine
                                 key={n.date}
                                 x={n.date}
+                                yAxisId="index"
                                 stroke={STANCE_COLORS[n.stance] ?? STANCE_COLORS.neutral}
                                 strokeDasharray="2 2"
                                 strokeOpacity={0.8}
@@ -1223,6 +1224,7 @@ export function ThemeInstruments({
                               <ReferenceLine
                                 key={n.date}
                                 x={n.date}
+                                yAxisId="price"
                                 stroke={STANCE_COLORS[n.stance] ?? STANCE_COLORS.neutral}
                                 strokeDasharray="2 2"
                                 strokeOpacity={0.8}

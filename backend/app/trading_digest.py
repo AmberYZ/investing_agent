@@ -523,6 +523,18 @@ def generate_theme_trading_digests(
     return count
 
 
+def _theme_narratives_text(db: Session, theme_id: int, limit: int = 40) -> str:
+    """Fetch narrative statements for this theme (for track-item context). Returns newline-joined text."""
+    rows = (
+        db.query(Narrative.statement)
+        .filter(Narrative.theme_id == theme_id)
+        .limit(limit)
+        .all()
+    )
+    statements = [r[0].strip() for r in rows if r[0] and (r[0].strip())]
+    return "\n".join(statements) if statements else ""
+
+
 def _update_theme_track_items_eodhd(
     db: Session,
     theme: Theme,
@@ -532,8 +544,10 @@ def _update_theme_track_items_eodhd(
     processed: int = 0,
     total: int = 1,
 ) -> None:
-    """Update track items using EODHD APIs only (agent: classify → fetch → process)."""
+    """Update track items using EODHD + theme narratives (agent: classify → fetch → process)."""
     from app.track_items_eodhd import update_theme_track_items_eodhd
+
+    theme_narratives = _theme_narratives_text(db, theme.id)
 
     def cb(api_name: str, action: str, theme_label: Optional[str]) -> None:
         if progress_callback:
@@ -550,6 +564,7 @@ def _update_theme_track_items_eodhd(
         track_items,
         primary_symbol,
         progress_callback=cb,
+        theme_narratives=theme_narratives or None,
     )
     theme.track_updates = json.dumps(results)
     db.flush()

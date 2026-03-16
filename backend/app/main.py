@@ -2863,11 +2863,18 @@ def list_all_ingest_jobs(limit: int = 500, db: Session = Depends(get_db)):
 
 @app.post("/admin/ingest-jobs/requeue", response_model=RequeueIngestJobsOut)
 def requeue_error_ingest_jobs():
-    """Reset ingest jobs in 'error' (cancelled or failed) back to 'queued' so the worker will retry them."""
+    """Reset recent ingest jobs in 'error' (cancelled or failed) back to 'queued' so the worker will retry them.
+
+    Only jobs created within the last 7 days are requeued to avoid retrying very old failures.
+    """
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
     with engine.begin() as conn:
         result = conn.execute(
             update(IngestJob)
-            .where(IngestJob.status == "error")
+            .where(
+                IngestJob.status == "error",
+                IngestJob.created_at >= cutoff,
+            )
             .values(
                 status="queued",
                 started_at=None,

@@ -16,6 +16,7 @@ from app.market_data import (
     fetch_quarterly_income_statement,
     get_earnings,
     get_earnings_estimates,
+    get_latest_close,
 )
 
 logger = logging.getLogger("investing_agent.track_items_eodhd")
@@ -100,19 +101,30 @@ def _sections_for_types(types: list[str]) -> list[str]:
 
 
 def _format_news_summary(items: list[dict]) -> str:
-    """Summarize news items into 1-2 sentences."""
+    """Summarize news with headlines and computed sentiment aggregation (EODHD sentiment per article)."""
     if not items:
         return "No recent news from EODHD."
-    headlines = [i.get("title", "").strip() for i in items[:5] if isinstance(i, dict) and i.get("title")]
-    if not headlines:
+    valid = [i for i in items[:10] if isinstance(i, dict) and i.get("title")]
+    if not valid:
         return "No recent news from EODHD."
+    headlines = [(i.get("title", "").strip() or "")[:100] for i in valid[:5]]
+    pos = sum(1 for i in valid if (i.get("sentiment") or "").lower() == "positive")
+    neg = sum(1 for i in valid if (i.get("sentiment") or "").lower() == "negative")
+    neu = len(valid) - pos - neg
+    neu = max(0, neu)
+    parts = []
     if len(headlines) == 1:
-        return f"Latest: {headlines[0][:120]}{'…' if len(headlines[0]) > 120 else ''}"
-    return f"Recent ({len(headlines)}): " + "; ".join(h[:80] + ("…" if len(h) > 80 else "") for h in headlines[:3])
+        parts.append(f"Latest: {headlines[0]}{'…' if len(headlines[0]) >= 100 else ''}")
+    else:
+        parts.append("Recent: " + "; ".join(h[:70] + ("…" if len(h) > 70 else "") for h in headlines[:3]))
+    if pos or neg or neu:
+        overall = "positive" if pos > neg and pos > neu else ("negative" if neg > pos and neg > neu else "mixed")
+        parts.append(f"Sentiment: {pos} pos, {neg} neg, {neu} neutral (overall: {overall}).")
+    return " ".join(parts)
 
 
 def _format_earnings_from_fundamentals(earnings: dict) -> str:
-    """Format Earnings section from fundamentals (History dict). EODHD may return non-dict for some symbols."""
+    """Format Earnings with computed T12, prior T12 growth %, and EPS trend (EODHD History)."""
     history = earnings.get("History") if isinstance(earnings.get("History"), dict) else {}
     if not history:
         return "No earnings history in EODHD."
@@ -132,23 +144,33 @@ def _format_earnings_from_fundamentals(earnings: dict) -> str:
         return "No earnings history in EODHD for this symbol."
     latest = rows[0]
     t12 = sum(r["reportedEPS"] for r in rows[:4]) if len(rows) >= 4 else None
-    parts = [f"Latest reported {latest['reportedDate']}: EPS ${latest['reportedEPS']:.2f}"]
+    t12_prior = sum(r["reportedEPS"] for r in rows[4:8]) if len(rows) >= 8 else None
+    parts = [f"Latest {latest['reportedDate']}: EPS ${latest['reportedEPS']:.2f}"]
     if t12 is not None:
         parts.append(f"Trailing 12M EPS ${t12:.2f}")
-    return ". ".join(parts)
+    if t12_prior is not None and t12_prior != 0:
+        growth_pct = round((t12 - t12_prior) / abs(t12_prior) * 100, 1)
+        parts.append(f"T12 vs prior 4Q: {growth_pct:+.1f}%")
+    if len(rows) >= 4:
+        first2 = sum(r["reportedEPS"] for r in rows[2:4])
+        last2 = sum(r["reportedEPS"] for r in rows[:2])
+        if first2 != 0:
+            trend = "improving" if last2 > first2 else ("declining" if last2 < first2 else "stable")
+            parts.append(f"EPS trend (recent 2Q vs prior 2Q): {trend}.")
+    return " ".join(parts)
 
 
 def _format_analyst_ratings(data: dict) -> str:
-    """Format AnalystRatings from fundamentals."""
+    """Format AnalystRatings with consensus summary (EODHD counts)."""
     ar = data.get("AnalystRatings") if isinstance(data.get("AnalystRatings"), dict) else {}
     if not ar:
         return "No analyst ratings in EODHD."
     target = ar.get("TargetPrice")
-    sb = ar.get("StrongBuy") or 0
-    b = ar.get("Buy") or 0
-    h = ar.get("Hold") or 0
-    s = ar.get("Sell") or 0
-    ss = ar.get("StrongSell") or 0
+    sb = int(ar.get("StrongBuy") or 0)
+    b = int(ar.get("Buy") or 0)
+    h = int(ar.get("Hold") or 0)
+    s = int(ar.get("Sell") or 0)
+    ss = int(ar.get("StrongSell") or 0)
     total = sb + b + h + s + ss
     parts = []
     if target is not None:
@@ -158,11 +180,20 @@ def _format_analyst_ratings(data: dict) -> str:
             pass
     if total > 0:
         parts.append(f"Ratings: StrongBuy {sb}, Buy {b}, Hold {h}, Sell {s}, StrongSell {ss}")
-    return ". " + " ".join(parts) if parts else "No analyst ratings in EODHD."
+        buy_side = sb + b
+        sell_side = s + ss
+        if buy_side > sell_side and buy_side > h:
+            consensus = "Strong Buy" if sb >= b else "Buy"
+        elif sell_side > buy_side and sell_side > h:
+            consensus = "Strong Sell" if ss >= s else "Sell"
+        else:
+            consensus = "Hold"
+        parts.append(f"Consensus: {consensus}.")
+    return " ".join(parts) if parts else "No analyst ratings in EODHD."
 
 
 def _format_valuation(data: dict) -> str:
-    """Format Valuation and Highlights. EODHD may return non-dict (e.g. 'N/A') for ETFs."""
+    """Format Valuation with PEG-based interpretation (EODHD Valuation/Highlights)."""
     val = data.get("Valuation") if isinstance(data.get("Valuation"), dict) else {}
     hl = data.get("Highlights") if isinstance(data.get("Highlights"), dict) else {}
     parts = []
@@ -181,39 +212,68 @@ def _format_valuation(data: dict) -> str:
     peg = hl.get("PEGRatio")
     if peg is not None:
         try:
-            parts.append(f"PEG {float(peg):.2f}")
+            peg_f = float(peg)
+            parts.append(f"PEG {peg_f:.2f}")
         except (TypeError, ValueError):
             pass
     if not parts:
         return "No valuation data in EODHD for this symbol."
-    return "Valuation (EODHD): " + ", ".join(parts)
+    out = "Valuation: " + ", ".join(parts)
+    if peg is not None:
+        try:
+            peg_f = float(peg)
+            if peg_f > 0 and peg_f < 1:
+                out += " (growth at reasonable price)."
+            elif peg_f > 2:
+                out += " (expensive vs growth)."
+            else:
+                out += " (in line with growth)."
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 def _format_insider(transactions: list) -> str:
-    """Format insider transactions."""
+    """Format insider transactions with net direction (buys vs sells)."""
     if not transactions:
         return "No recent insider transactions in EODHD."
     lines = []
-    for t in transactions[:5]:
+    buys = sells = 0
+    for t in transactions[:10]:
         if not isinstance(t, dict):
             continue
-        name = t.get("ownerName") or t.get("ownerName") or "Unknown"
-        date = (t.get("date") or t.get("transactionDate") or "")[:10]
         code = t.get("transactionCode") or ""
-        acq = t.get("transactionAcquiredDisposed") or ""
+        acq = (t.get("transactionAcquiredDisposed") or "").upper()
         amt = t.get("transactionAmount")
+        try:
+            amt_int = int(amt) if amt not in (None, "", "-") else 0
+        except (TypeError, ValueError):
+            amt_int = 0
+        is_buy = acq == "A" or str(code).upper() in ("P", "A", "G", "C")
+        if is_buy:
+            buys += amt_int
+        else:
+            sells += amt_int
+        name = t.get("ownerName") or "Unknown"
+        date = (t.get("date") or t.get("transactionDate") or "")[:10]
         price = t.get("transactionPrice")
-        if code or acq:
-            action = "Acquired" if acq == "A" or str(code).upper() in ("P", "A") else "Disposed"
-            line = f"{date} {name}: {action}"
-            if amt is not None and int(amt) != 0:
-                line += f" {amt} shares"
-            if price is not None:
+        action = "Acquired" if is_buy else "Disposed"
+        line = f"{date} {name}: {action}"
+        if amt_int != 0:
+            line += f" {amt_int} shares"
+        if price is not None:
+            try:
                 line += f" @ ${float(price):.2f}"
-            lines.append(line)
+            except (TypeError, ValueError):
+                pass
+        lines.append(line)
     if not lines:
         return "No recent insider transactions in EODHD."
-    return "Recent insider (EODHD): " + "; ".join(lines[:3])
+    out = "; ".join(lines[:3])
+    if buys or sells:
+        net = "net buying" if buys > sells else ("net selling" if sells > buys else "balanced")
+        out += f" ({net}: {buys} bought, {sells} sold)."
+    return "Insider: " + out
 
 
 def _format_dividends(data: dict) -> str:
@@ -243,39 +303,57 @@ def _format_dividends(data: dict) -> str:
     return "Dividends (EODHD): " + ", ".join(parts)
 
 
-def _format_technicals(data: dict) -> str:
-    """Format Technicals (52w high/low)."""
+def _format_technicals(data: dict, symbol: Optional[str] = None) -> str:
+    """Format Technicals with 52w range and, if symbol given, latest close and % of 52w range."""
     tech = data.get("Technicals") if isinstance(data.get("Technicals"), dict) else {}
     high = tech.get("52WeekHigh")
     low = tech.get("52WeekLow")
     if high is None and low is None:
         return "No 52-week high/low in EODHD for this symbol."
+    try:
+        high_f = float(high) if high not in (None, "", "-") else None
+        low_f = float(low) if low not in (None, "", "-") else None
+    except (TypeError, ValueError):
+        high_f = low_f = None
     parts = []
-    if high is not None:
-        parts.append(f"52w high ${float(high):.2f}")
-    if low is not None:
-        parts.append(f"52w low ${float(low):.2f}")
-    return "Technicals (EODHD): " + ", ".join(parts)
+    if high_f is not None:
+        parts.append(f"52w high ${high_f:.2f}")
+    if low_f is not None:
+        parts.append(f"52w low ${low_f:.2f}")
+    if symbol and high_f is not None and low_f is not None and high_f > low_f:
+        latest = get_latest_close(symbol)
+        close = latest.get("close")
+        if close is not None and close > 0:
+            pct_range = round((close - low_f) / (high_f - low_f) * 100, 0)
+            parts.append(f"last close ${close:.2f} ({int(pct_range)}% of 52w range)")
+    return "Technicals: " + ", ".join(parts)
 
 
 def _format_highlights(data: dict) -> str:
-    """Format Highlights (growth, margins). EODHD may return non-dict for some symbols."""
+    """Format Highlights with margin expansion/pressure interpretation (EODHD growth + margins)."""
     hl = data.get("Highlights") if isinstance(data.get("Highlights"), dict) else {}
     parts = []
-    qeg = hl.get("QuarterlyEarningsGrowthYOY")
-    qrg = hl.get("QuarterlyRevenueGrowthYOY")
-    if qeg is not None:
+    qeg_raw = hl.get("QuarterlyEarningsGrowthYOY")
+    qrg_raw = hl.get("QuarterlyRevenueGrowthYOY")
+    qeg = None
+    qrg = None
+    if qeg_raw is not None:
         try:
-            pct = float(qeg) * 100 if abs(float(qeg)) <= 2 else float(qeg)
-            parts.append(f"Q earnings growth YoY {pct:.1f}%")
+            qeg = float(qeg_raw) * 100 if abs(float(qeg_raw)) <= 2 else float(qeg_raw)
+            parts.append(f"Q earnings growth YoY {qeg:.1f}%")
         except (TypeError, ValueError):
             pass
-    if qrg is not None:
+    if qrg_raw is not None:
         try:
-            pct = float(qrg) * 100 if abs(float(qrg)) <= 2 else float(qrg)
-            parts.append(f"Q revenue growth YoY {pct:.1f}%")
+            qrg = float(qrg_raw) * 100 if abs(float(qrg_raw)) <= 2 else float(qrg_raw)
+            parts.append(f"Q revenue growth YoY {qrg:.1f}%")
         except (TypeError, ValueError):
             pass
+    if qeg is not None and qrg is not None:
+        if qeg > qrg + 5:
+            parts.append("(earnings outpacing revenue → margin expansion)")
+        elif qrg > qeg + 5:
+            parts.append("(revenue outpacing earnings → margin pressure)")
     for key, label in [("ProfitMargin", "Profit margin"), ("OperatingMarginTTM", "Operating margin")]:
         v = hl.get(key)
         if v is not None:
@@ -286,7 +364,7 @@ def _format_highlights(data: dict) -> str:
                 pass
     if not parts:
         return "No highlights in EODHD for this symbol."
-    return "Highlights (EODHD): " + ", ".join(parts)
+    return "Highlights: " + ", ".join(parts)
 
 
 def _process_trend(
@@ -328,12 +406,13 @@ def _process_specific_fact(
     track_item: str,
     symbol: str,
     progress_callback: Optional[Callable[[str, str], None]] = None,
+    theme_narratives: Optional[str] = None,
 ) -> str:
     """
-    Gather EODHD text (news headlines, company description), ask LLM to answer the track question
+    Gather EODHD text (news, company description) and optional theme narratives; ask LLM to answer
     or say "I couldn't find this in the available EODHD data."
     """
-    # Gather context: news + General (description)
+    # Gather context: news + General (description) + theme narratives
     if progress_callback:
         progress_callback("EODHD News", f"Fetching news for {symbol}")
     news_res = fetch_news_for_ticker(symbol, limit=15)
@@ -356,7 +435,11 @@ def _process_specific_fact(
     if data and isinstance(data.get("General"), dict):
         g = data["General"]
         general_text = (g.get("Description") or g.get("description") or "").strip() or ""
-    context = f"Company description (EODHD):\n{general_text[:8000]}\n\nRecent news / excerpts (EODHD):\n{news_text[:12000]}"
+    context_parts = []
+    if (theme_narratives or "").strip():
+        context_parts.append(f"Theme narratives (from ingested documents):\n{theme_narratives.strip()[:6000]}")
+    context_parts.append(f"Company description (EODHD):\n{general_text[:8000]}\n\nRecent news / excerpts (EODHD):\n{news_text[:12000]}")
+    context = "\n\n".join(context_parts)
 
     try:
         from app.llm.provider import chat_completion
@@ -368,9 +451,9 @@ def _process_specific_fact(
     if progress_callback:
         progress_callback("LLM", "Searching for answer in EODHD data")
     system = (
-        "You are a financial research assistant. You only have the EODHD-sourced text below (company description and news). "
+        "You are a financial research assistant. You have (1) theme narratives from ingested documents and (2) EODHD-sourced text (company description and news). "
         "Answer the user's tracking question ONLY if you can find a direct answer or a close proxy in that text. "
-        "If you cannot find any relevant information, reply with exactly: I couldn't find this in the available EODHD data. "
+        "If you cannot find any relevant information, reply with exactly: I couldn't find this in the available data. "
         "Keep your answer brief (1-3 sentences). Do not make up numbers or cite sources outside the given text."
     )
     user = f"Tracking question: {track_item}\n\n{context}"
@@ -381,7 +464,7 @@ def _process_specific_fact(
         return f"Could not run LLM: {e}. EODHD text had company description and {len(headlines)} news items."
     answer = (answer or "").strip()
     if not answer:
-        return "I couldn't find this in the available EODHD data."
+        return "I couldn't find this in the available data."
     return answer[:1200]
 
 
@@ -390,9 +473,10 @@ def _llm_answer_track_question(
     symbol: str,
     eodhd_context: str,
     progress_callback: Optional[Callable[[str, str], None]] = None,
+    theme_narratives: Optional[str] = None,
 ) -> str:
     """
-    Call LLM to answer the user's track question given EODHD-sourced context.
+    Call LLM to answer the user's track question given EODHD context and optional theme narratives.
     Returns a short answer string, or empty string if LLM unavailable or on error.
     """
     try:
@@ -400,17 +484,20 @@ def _llm_answer_track_question(
         from app.settings import settings
     except ImportError:
         return ""
-    if not getattr(settings, "llm_api_key", None) or not (eodhd_context or "").strip():
+    full_context = (eodhd_context or "").strip()
+    if (theme_narratives or "").strip():
+        full_context = f"Theme narratives (from ingested documents):\n{theme_narratives.strip()[:5000]}\n\nEODHD / market data:\n{full_context}"
+    if not getattr(settings, "llm_api_key", None) or not full_context:
         return ""
     if progress_callback:
         progress_callback("LLM", "Answering tracked question")
     system = (
         "You are a concise financial research assistant. The user is tracking a question about a stock/symbol. "
-        "Below is context from market data (EODHD: news, fundamentals, earnings, etc.). "
+        "Below is context: theme narratives (from ingested documents) and/or market data (EODHD: news, fundamentals, earnings). "
         "Answer the user's question in 1-3 short sentences based on this context. "
         "If the context does not contain enough to answer, say so briefly. Do not make up numbers or facts."
     )
-    user = f"Symbol: {symbol}\n\nTracked question: {track_item}\n\nContext:\n{eodhd_context[:8000]}"
+    user = f"Symbol: {symbol}\n\nTracked question: {track_item}\n\nContext:\n{full_context[:10000]}"
     try:
         answer = chat_completion(system=system, user=user, max_tokens=350)
     except Exception as e:
@@ -424,11 +511,11 @@ def update_track_item_eodhd(
     track_item: str,
     symbol: str,
     progress_callback: Optional[Callable[[str, str], None]] = None,
+    theme_narratives: Optional[str] = None,
 ) -> str:
     """
     For one track item and one symbol: classify strategy → trend / specific_fact / snapshot.
-    progress_callback(api_name, action) e.g. ("EODHD News", "Fetching for AAPL").
-    Trend: quarterly financials + margin trend. Specific_fact: news + description + LLM or "can't find". Snapshot: EODHD news/earnings/highlights.
+    If theme_narratives is provided (narrative statements from this theme), LLM steps can use them to answer.
     """
     if not (symbol or "").strip():
         return "No symbol available for this theme (add a ticker to the theme)."
@@ -436,10 +523,10 @@ def update_track_item_eodhd(
     strategy = _classify_strategy(track_item)
     if strategy == STRATEGY_TREND:
         update = _process_trend(track_item, symbol, progress_callback)
-        llm_answer = _llm_answer_track_question(track_item, symbol, update, progress_callback)
+        llm_answer = _llm_answer_track_question(track_item, symbol, update, progress_callback, theme_narratives=theme_narratives)
         return f"{update}\n\n{llm_answer}" if llm_answer else update
     if strategy == STRATEGY_SPECIFIC_FACT:
-        return _process_specific_fact(track_item, symbol, progress_callback)
+        return _process_specific_fact(track_item, symbol, progress_callback, theme_narratives=theme_narratives)
     # Snapshot: existing EODHD-only flow
     types = _classify_track_item(track_item)
     sections = _sections_for_types(types)
@@ -480,7 +567,7 @@ def update_track_item_eodhd(
             if EODHD_DIVIDENDS in types:
                 parts.append(_format_dividends(data))
             if EODHD_TECHNICALS in types:
-                parts.append(_format_technicals(data))
+                parts.append(_format_technicals(data, symbol))
 
     # 3) Earnings: from fundamentals if we fetched Earnings section, else get_earnings
     if EODHD_EARNINGS in types:
@@ -513,7 +600,7 @@ def update_track_item_eodhd(
     if not parts:
         return "EODHD data could not be retrieved for this symbol. Check API key and symbol."
     eodhd_update = " ".join(parts)[:1500]
-    llm_answer = _llm_answer_track_question(track_item, symbol, eodhd_update, progress_callback)
+    llm_answer = _llm_answer_track_question(track_item, symbol, eodhd_update, progress_callback, theme_narratives=theme_narratives)
     return f"{eodhd_update}\n\n{llm_answer}" if llm_answer else eodhd_update
 
 
@@ -522,6 +609,7 @@ def update_theme_track_items_eodhd(
     track_items: list[str],
     primary_symbol: Optional[str],
     progress_callback: Optional[Callable[[str, str, Optional[str]], None]] = None,
+    theme_narratives: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """
     Update all track items for a theme using EODHD only.
@@ -549,7 +637,7 @@ def update_theme_track_items_eodhd(
         if not item:
             continue
         try:
-            update = update_track_item_eodhd(item, symbol, progress_callback=cb)
+            update = update_track_item_eodhd(item, symbol, progress_callback=cb, theme_narratives=theme_narratives)
         except Exception as e:
             logger.warning("EODHD track update failed for %r: %s", item, e)
             update = f"Update failed: {e}"
