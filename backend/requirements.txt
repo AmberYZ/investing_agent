@@ -20,6 +20,7 @@ beautifulsoup4>=4.12
 
 # Gmail daily sync (scripts/gmail_to_ingest.py when ENABLE_GMAIL_DAILY_SYNC=true)
 requests>=2.31
+PySocks>=1.7.1
 google-auth-oauthlib>=1.2
 google-auth-httplib2>=0.2
 google-api-python-client>=2.100

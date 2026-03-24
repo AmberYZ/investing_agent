@@ -948,13 +948,46 @@ export function ThemeInstruments({
                           {quote.forward_pe != null ? quote.forward_pe.toFixed(1) : "—"}
                         </strong>
                       </span>
-                      {quote.ev_to_ebitda != null && <span>EV/EBITDA: <strong>{quote.ev_to_ebitda.toFixed(1)}</strong></span>}
-                      {quote.eps_growth_0y_pct != null && <span title="Current FY EPS est. growth">EPS gr 0y: <strong>{quote.eps_growth_0y_pct.toFixed(1)}%</strong></span>}
-                      {quote.eps_growth_1y_pct != null && <span title="Next FY EPS est. growth">EPS gr +1y: <strong>{quote.eps_growth_1y_pct.toFixed(1)}%</strong></span>}
-                      {quote.price_sales_ttm != null && <span>P/S: <strong>{quote.price_sales_ttm.toFixed(2)}</strong></span>}
-                      {quote.price_book_mrq != null && <span>P/B: <strong>{quote.price_book_mrq.toFixed(2)}</strong></span>}
-                      {histPe?.current_pe != null && <span>Current P/E (trailing): <strong>{histPe.current_pe}</strong></span>}
-                      {histPe?.pe_percentile != null && <span>P/E percentile (hist.): <strong>{histPe.pe_percentile}%</strong></span>}
+                      {quote.peg_ratio != null && (
+                        <span>
+                          PEG: <strong>{quote.peg_ratio.toFixed(2)}</strong>
+                        </span>
+                      )}
+                      {quote.ev_to_ebitda != null && (
+                        <span>
+                          EV/EBITDA: <strong>{quote.ev_to_ebitda.toFixed(1)}</strong>
+                        </span>
+                      )}
+                      {quote.eps_growth_0y_pct != null && (
+                        <span title="Current FY EPS est. growth">
+                          EPS gr 0y: <strong>{quote.eps_growth_0y_pct.toFixed(1)}%</strong>
+                        </span>
+                      )}
+                      {quote.eps_growth_1y_pct != null && (
+                        <span title="Next FY EPS est. growth">
+                          EPS gr +1y: <strong>{quote.eps_growth_1y_pct.toFixed(1)}%</strong>
+                        </span>
+                      )}
+                      {quote.price_sales_ttm != null && (
+                        <span>
+                          P/S: <strong>{quote.price_sales_ttm.toFixed(2)}</strong>
+                        </span>
+                      )}
+                      {quote.price_book_mrq != null && (
+                        <span>
+                          P/B: <strong>{quote.price_book_mrq.toFixed(2)}</strong>
+                        </span>
+                      )}
+                      {histPe?.current_pe != null && (
+                        <span>
+                          Current P/E (trailing): <strong>{histPe.current_pe}</strong>
+                        </span>
+                      )}
+                      {histPe?.pe_percentile != null && (
+                        <span>
+                          P/E percentile (hist.): <strong>{histPe.pe_percentile}%</strong>
+                        </span>
+                      )}
                       {/* Analyst ratings: target + bar */}
                       {(() => {
                         const sb = quote.analyst_strong_buy ?? 0, b = quote.analyst_buy ?? 0, h = quote.analyst_hold ?? 0, s = quote.analyst_sell ?? 0, ss = quote.analyst_strong_sell ?? 0;

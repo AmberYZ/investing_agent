@@ -35,12 +35,27 @@ Theme
 
 Theme rules
 - Primary focus: identify the main subject(s) that occupy a meaningful share of the text (e.g. >30%).
+- The theme must be the core subject whose state, value, risk, or behavior is being described or changed (the “object” of the statements), not the tool, channel, or intermediary that produces, observes, or transmits those statements.
+- When a statement involves both an actor (who initiates, measures, or influences) and a subject (who is affected or described), assign the theme to the subject that is impacted or characterized, not to the actor, unless the document’s central purpose is to analyze the actor itself.
+- Do not use general containers or meta-constructs (e.g. broad vehicles, platforms, indices, surveys, or sentiment measures) as themes when they are only serving as mechanisms to talk about underlying assets, sectors, or macro variables. In those cases, themes should be the underlying assets or economic subjects; treat the containers as sub-themes or narrative context.
+- Only promote an actor, mechanism, or container to the theme level when the document’s primary analytical focus is that entity’s own structure, strategy, performance, or economics, rather than the things it measures or affects.
+- Do not use the name or description of a survey, barometer, or poll as a theme when the document aggregates views on many underlying assets, sectors, or macro variables. In such cases, treat the document as multi-topic and assign each narrative to the asset, sector, index, or macro variable it describes; keep any survey construct only as a sub-theme or narrative context.
+- Only use a survey provider, barometer, or similar meta construct as the theme when the central subject of the document is that construct itself (for example, explaining its methodology, history, or commercial impact), not when it is merely the data source for views on other investable topics.
 - Deduplication: if a topic is a subset of another (e.g. "LLMs" vs "AI"), collapse to the higher-level canonical theme unless the document is exclusively about the subset.
 - No meta-themes: never use "Stock Market" or "Macro Trends"; use specific drivers (e.g. "S&P 500 Earnings", "US Treasury Yields").
 - Use one theme when the document is clearly single-topic; use multiple themes when it discusses several distinct investable topics or theses.
 - Entity test: if the document is primarily about a single company, fund, or asset, the theme label must be just that entity's name (e.g. "BYD", not "BYD expansion" or "BYD international sales").
 - Overarching theme vs example entities: If the document is structured as one investable theme or thesis with multiple entities or names as examples or picks (e.g. "our selection of AI risk-proof long ideas" with eight stocks), use ONE theme whose label is the thematic concept (e.g. "AI risk-proof / AI displacement resilience", "Quality compounders", "European SMID value"), not one theme per entity. Put each example entity or pick as a sub_theme (e.g. "Asmodee", "Bunzl") or weave the entity name into the narrative text, so the theme remains trackable when another source later publishes different names under the same concept.
 - Use multiple themes (one per entity) only when the document is genuinely multi-topic—e.g. separate deep dives on unrelated companies—not when it is a single thematic list or "picks under one idea".
+
+Extraction flow for themes vs narratives
+- Step 1: Identify candidate subjects. Read the document and list the concrete assets, companies, sectors, instruments, and macro variables whose prices, demand, risk, earnings, or behavior are being described or changed. These are your candidate themes.
+- Step 2: Allow multiple themes. If the document is a container (for example, a survey, barometer, index review, or “roundup” of views) that reports on many different subjects, do NOT force a single theme for the whole document. Instead, treat it as multi-topic and select multiple themes from the candidate list.
+- Step 3: Choose the theme at the narrative level. For each narrative, choose the theme based on the subject that the evidence sentence is actually about (the thing whose state or outlook is being described or altered). Ignore the container or medium (such as a survey, index provider, platform, or sentiment gauge) unless the evidence is specifically analyzing that container itself.
+- Step 4: Containers and actors as context. When a container (such as a survey, index, barometer, platform, regulator, or policy-maker) is only providing data or exerting influence on other subjects, do NOT use it as the theme. Instead:
+  - Use the impacted subject (asset, company, sector, or macro variable) as the theme.
+  - Optionally use the container or actor as a sub-theme or as part of the narrative text to explain how the change is measured or driven.
+- Step 5: Promote an actor, mechanism, or container to the theme level only if the document’s primary analytical focus is that actor or container’s own structure, strategy, economics, or performance, rather than the downstream subjects it measures or affects.
 
 Sub-theme
 - A short label (2–5 words) for the specific dimension, angle, catalyst, or named entity being analyzed within the theme. Sub-themes carry the specificity—they are the place for qualifiers like "international sales", "growth strategy", "margin pressure", etc.

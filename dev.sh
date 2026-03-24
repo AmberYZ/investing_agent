@@ -14,11 +14,17 @@ set -euo pipefail
 #
 # Notes:
 # - Requires: python3, node/npm, (optionally) docker + docker compose
+# - API, worker, and ingest client all use backend/.venv (both requirements files installed there).
 # - By default this leaves Postgres to sqlite. To use Postgres, start it first:
 #       docker compose up -d db
 #   and set DATABASE_URL in .env accordingly, then run this script.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Single Python environment for API, worker, and ingest client (avoid split .venv dirs).
+PYTHON_VENV="$ROOT_DIR/backend/.venv"
+BACKEND_REQ="$ROOT_DIR/backend/requirements.txt"
+INGEST_CLIENT_REQ="$ROOT_DIR/ingest-client/requirements.txt"
 
 # Prefer Python 3.12+ (3.9 is EOL; google-auth and others recommend upgrading)
 python_cmd() {
@@ -33,41 +39,68 @@ info() {
   echo "[dev] $*"
 }
 
+kill_tree() {
+  local pid="$1"
+  [[ -z "${pid:-}" ]] && return 0
+  kill -0 "$pid" 2>/dev/null || return 0
+
+  # Terminate child processes first to avoid orphaned watchers/reload workers.
+  if command -v pgrep &>/dev/null; then
+    local children
+    children=$(pgrep -P "$pid" 2>/dev/null || true)
+    if [[ -n "${children:-}" ]]; then
+      local child
+      for child in $children; do
+        kill_tree "$child"
+      done
+    fi
+  fi
+
+  kill -TERM "$pid" 2>/dev/null || true
+}
+
+stop_all() {
+  info "Stopping..."
+  trap - INT TERM EXIT
+
+  for pid in "${SERVICE_PIDS[@]:-}"; do
+    kill_tree "$pid"
+  done
+
+  # Give graceful shutdown a moment, then force kill anything left.
+  sleep 1
+  for pid in "${SERVICE_PIDS[@]:-}"; do
+    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
+  done
+}
+
+ensure_python_venv() {
+  if [[ ! -d "$PYTHON_VENV" ]]; then
+    info "Creating shared Python virtualenv at backend/.venv (using $(python_cmd -c 'import sys; print(sys.version.split()[0])'))..."
+    python_cmd -m venv "$PYTHON_VENV"
+  fi
+  # Backend + ingest-client deps in one env (ingest-client adds e.g. watchdog).
+  "$PYTHON_VENV/bin/pip" install -q -r "$BACKEND_REQ" -r "$INGEST_CLIENT_REQ"
+}
+
 run_backend() {
   info "Starting backend API..."
   cd "$ROOT_DIR/backend"
-
-  if [[ ! -d .venv ]]; then
-    info "Creating backend virtualenv (using $(python_cmd -c 'import sys; print(sys.version.split()[0])'))..."
-    python_cmd -m venv .venv
-  fi
-
-  .venv/bin/pip install -r requirements.txt >/dev/null
-  .venv/bin/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+  # Ensure Gmail daily sync subprocess uses the same shared venv interpreter.
+  GMAIL_SYNC_PYTHON="$PYTHON_VENV/bin/python" \
+    "$PYTHON_VENV/bin/python" -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 }
 
 run_worker() {
   info "Starting ingest worker..."
   cd "$ROOT_DIR/backend"
-
-  if [[ ! -d .venv ]]; then
-    python_cmd -m venv .venv
-  fi
-
-  .venv/bin/pip install -r requirements.txt >/dev/null
-  .venv/bin/python -m app.worker
+  "$PYTHON_VENV/bin/python" -m app.worker
 }
 
 run_ingest_client() {
   info "Starting ingest client watcher..."
   cd "$ROOT_DIR/ingest-client"
-
-  if [[ ! -d .venv ]]; then
-    python_cmd -m venv .venv
-  fi
-
-  .venv/bin/pip install -r requirements.txt >/dev/null
-  .venv/bin/python -m ingest_client.watcher
+  "$PYTHON_VENV/bin/python" -m ingest_client.watcher
 }
 
 run_frontend() {
@@ -109,30 +142,35 @@ free_port_8000() {
 }
 
 main() {
+  SERVICE_PIDS=()
   info "Root directory: $ROOT_DIR"
   info "Make sure .env is configured (see .env.example)."
 
   free_port_8000
+  ensure_python_venv
   info "Launching services (API, worker, ingest client, frontend)..."
+  trap 'stop_all; exit 0' INT TERM EXIT
 
   # Start backend first, then wait for it so the frontend's first SSR request can reach it
   (run_backend) &
   API_PID=$!
+  SERVICE_PIDS+=("$API_PID")
   wait_for_api
 
   (run_worker) &
   WORKER_PID=$!
+  SERVICE_PIDS+=("$WORKER_PID")
 
   (run_ingest_client) &
   INGEST_PID=$!
+  SERVICE_PIDS+=("$INGEST_PID")
 
   (run_frontend) &
   FRONTEND_PID=$!
+  SERVICE_PIDS+=("$FRONTEND_PID")
 
   info "PIDs: api=$API_PID worker=$WORKER_PID ingest=$INGEST_PID frontend=$FRONTEND_PID"
   info "Press Ctrl+C to stop everything."
-
-  trap 'info "Stopping..."; kill $API_PID $WORKER_PID $INGEST_PID $FRONTEND_PID 2>/dev/null || true; exit 0' INT TERM
 
   # Wait on any process to exit; Ctrl+C also handled by trap.
   wait
