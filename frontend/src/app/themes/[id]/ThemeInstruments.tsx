@@ -173,6 +173,7 @@ const STANCE_COLORS: Record<string, string> = {
   mixed: "#f59e0b",
   neutral: "#94a3b8",
 };
+const COMPONENT_LINE_COLORS = ["#22c55e", "#8b5cf6", "#ec4899", "#14b8a6", "#ef4444", "#6366f1", "#f97316", "#06b6d4", "#a3a3a3"];
 
 function dominantStance(m: ThemeMetricsByStance): string {
   if (!m.total_count) return "neutral";
@@ -187,22 +188,68 @@ function dominantStance(m: ThemeMetricsByStance): string {
 }
 
 function buildBasketSeries(
-  symbolQuotes: Map<string, InstrumentQuote>
+  symbolQuotes: Map<string, InstrumentQuote>,
+  weightsBySymbol: Record<string, number>
 ): { date: string; value: number }[] {
-  const byDate: Record<string, number[]> = {};
-  for (const [, q] of symbolQuotes) {
+  const allDates = new Set<string>();
+  const perSymbolDateClose = new Map<string, Map<string, number>>();
+
+  for (const [symbol, q] of symbolQuotes) {
     if (!q.prices?.length) continue;
-    const firstClose = q.prices[0].close;
-    if (firstClose <= 0) continue;
+    const closeByDate = new Map<string, number>();
     for (const p of q.prices) {
-      const norm = (p.close / firstClose) * 100;
-      if (!byDate[p.date]) byDate[p.date] = [];
-      byDate[p.date].push(norm);
+      const d = (p.date && String(p.date)).slice(0, 10);
+      const c = Number(p.close);
+      if (!d || !Number.isFinite(c) || c <= 0) continue;
+      closeByDate.set(d, c);
+      allDates.add(d);
     }
+    if (closeByDate.size > 0) perSymbolDateClose.set(symbol, closeByDate);
   }
-  return Object.entries(byDate)
-    .map(([date, vals]) => ({ date, value: vals.reduce((a, b) => a + b, 0) / vals.length }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const sortedDates = [...allDates].sort();
+  if (sortedDates.length === 0) return [];
+  const globalStartDate = sortedDates[0];
+
+  const perSymbolNormalized = new Map<string, Map<string, number>>();
+  for (const [symbol, closeByDate] of perSymbolDateClose) {
+    const symbolDates = [...closeByDate.keys()].sort();
+    const baseDate = symbolDates.find((d) => d >= globalStartDate);
+    if (!baseDate) continue;
+    const baseClose = closeByDate.get(baseDate);
+    if (baseClose == null || !Number.isFinite(baseClose) || baseClose <= 0) continue;
+
+    const normByDate = new Map<string, number>();
+    let lastClose: number | null = null;
+    for (const d of sortedDates) {
+      if (d < baseDate) continue;
+      const c = closeByDate.get(d);
+      if (c != null) lastClose = c;
+      if (lastClose == null) continue;
+      normByDate.set(d, (lastClose / baseClose) * 100);
+    }
+    if (normByDate.size > 0) perSymbolNormalized.set(symbol, normByDate);
+  }
+
+  const rows: { date: string; value: number; [key: string]: string | number }[] = [];
+  for (const date of sortedDates) {
+    let weightedSum = 0;
+    let totalWeight = 0;
+    const row: { date: string; value: number; [key: string]: string | number } = { date, value: 0 };
+    for (const [symbol, normByDate] of perSymbolNormalized) {
+      const idx = normByDate.get(date);
+      if (idx == null || !Number.isFinite(idx)) continue;
+      row[`inst_${symbol}`] = idx;
+      const weightRaw = Number(weightsBySymbol[symbol]);
+      const weight = Number.isFinite(weightRaw) && weightRaw > 0 ? weightRaw : 1;
+      weightedSum += idx * weight;
+      totalWeight += weight;
+    }
+    if (totalWeight <= 0) continue;
+    row.value = weightedSum / totalWeight;
+    rows.push(row);
+  }
+  return rows;
 }
 
 export function ThemeInstruments({
@@ -244,6 +291,9 @@ export function ThemeInstruments({
   const [narrativeConfidenceFilter, setNarrativeConfidenceFilter] = useState<"all" | "fact" | "opinion">("all");
   const [stanceData, setStanceData] = useState<ThemeMetricsByStance[]>([]);
   const [overlaySpy, setOverlaySpy] = useState(true);
+  const [showBasketComponents, setShowBasketComponents] = useState(false);
+  const [showBasketAdvanced, setShowBasketAdvanced] = useState(false);
+  const [weightsBySymbol, setWeightsBySymbol] = useState<Record<string, number>>({});
   const [spyQuote, setSpyQuote] = useState<InstrumentQuote | null>(null);
   const [spyQuoteLoading, setSpyQuoteLoading] = useState(false);
   const [overlayRsi, setOverlayRsi] = useState(false);
@@ -320,6 +370,17 @@ export function ThemeInstruments({
       setQuote(null);
     }
   }, [viewMode, dedupedInstruments, selectedSymbol]);
+
+  useEffect(() => {
+    setWeightsBySymbol((prev) => {
+      const next: Record<string, number> = {};
+      for (const inst of dedupedInstruments) {
+        const existing = Number(prev[inst.symbol]);
+        next[inst.symbol] = Number.isFinite(existing) && existing > 0 ? existing : 1;
+      }
+      return next;
+    });
+  }, [dedupedInstruments]);
 
   const loadQuote = useCallback(
     async (symbol: string, useCache = true): Promise<InstrumentQuote | null> => {
@@ -622,13 +683,12 @@ export function ThemeInstruments({
     return out;
   }, [chartData, overlaySpy, spyQuote?.prices]);
 
-  const basketQuotes = useRef<Map<string, InstrumentQuote>>(new Map());
+  const [basketQuotes, setBasketQuotes] = useState<Map<string, InstrumentQuote>>(new Map());
   const [basketLoading, setBasketLoading] = useState(false);
-  const [basketSeries, setBasketSeries] = useState<{ date: string; value: number }[]>([]);
 
   useEffect(() => {
     if (viewMode !== "basket" || dedupedInstruments.length === 0) {
-      setBasketSeries([]);
+      setBasketQuotes(new Map());
       return;
     }
     const loadAll = async () => {
@@ -638,12 +698,16 @@ export function ThemeInstruments({
         const q = await loadQuote(inst.symbol);
         if (q?.prices?.length) map.set(inst.symbol, q);
       }
-      basketQuotes.current = map;
-      setBasketSeries(buildBasketSeries(map));
+      setBasketQuotes(map);
       setBasketLoading(false);
     };
     loadAll();
   }, [viewMode, dedupedInstruments, loadQuote]);
+
+  const basketSeries = useMemo(
+    () => buildBasketSeries(basketQuotes, weightsBySymbol),
+    [basketQuotes, weightsBySymbol]
+  );
 
   type BasketPointWithSpy = { date: string; value: number; spyIndex?: number };
 
@@ -690,7 +754,7 @@ export function ThemeInstruments({
         <>
           <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">Related stocks & ETFs</h2>
           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            Add tickers, then view a single symbol or the basket (simple average of normalized prices). Data is cached to limit API calls.
+            Add tickers, then view a single symbol or a normalized basket. Data is cached to limit API calls.
           </p>
         </>
       )}
@@ -803,7 +867,7 @@ export function ThemeInstruments({
               onClick={() => setViewMode("basket")}
               className={`rounded-lg px-2.5 py-1 text-xs font-medium ${viewMode === "basket" ? "bg-zinc-200 dark:bg-zinc-700" : "bg-zinc-100 dark:bg-zinc-800"}`}
             >
-              Basket (avg)
+              Basket
             </button>
           </div>
 
@@ -862,7 +926,7 @@ export function ThemeInstruments({
               <>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                    Basket performance (normalized avg)
+                    Basket performance (normalized)
                   </h3>
                   <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600 dark:text-zinc-400">
                     <label className="flex cursor-pointer items-center gap-1.5">
@@ -874,11 +938,54 @@ export function ThemeInstruments({
                       />
                       <span>Overlay with SPY (100 = start)</span>
                     </label>
+                    <label className="flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={showBasketComponents}
+                        onChange={(e) => setShowBasketComponents(e.target.checked)}
+                        className="rounded border-zinc-300"
+                      />
+                      <span>Show basket components</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setShowBasketAdvanced((prev) => !prev)}
+                      className="rounded border border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                    >
+                      {showBasketAdvanced ? "Hide advanced" : "Advanced"}
+                    </button>
                     {overlaySpy && spyQuoteLoading && (
                       <span className="text-[11px] text-zinc-500 dark:text-zinc-400">Loading SPY…</span>
                     )}
                   </div>
                 </div>
+                {showBasketAdvanced && (
+                  <div className="mt-2 rounded-lg border border-zinc-200 p-2 dark:border-zinc-800">
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                      Basket weights (optional). Default is equal weight.
+                    </p>
+                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+                      {dedupedInstruments.map((inst) => (
+                        <label key={`weight-${inst.symbol}`} className="flex items-center gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-400">
+                          <span className="w-12 font-medium">{inst.symbol}</span>
+                          <input
+                            type="number"
+                            min="0.01"
+                            step="0.01"
+                            value={weightsBySymbol[inst.symbol] ?? 1}
+                            onChange={(e) =>
+                              setWeightsBySymbol((prev) => {
+                                const raw = Number(e.target.value);
+                                return { ...prev, [inst.symbol]: Number.isFinite(raw) && raw > 0 ? raw : 1 };
+                              })
+                            }
+                            className="w-20 rounded border border-zinc-300 bg-white px-2 py-1 text-[11px] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {basketLoading ? (
                   <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
                 ) : basketSeries.length > 0 ? (
@@ -911,6 +1018,20 @@ export function ThemeInstruments({
                           dot={false}
                           name="Basket (100 = start)"
                         />
+                        {showBasketComponents &&
+                          dedupedInstruments.map((inst, idx) => (
+                            <Line
+                              key={`component-${inst.symbol}`}
+                              type="monotone"
+                              dataKey={`inst_${inst.symbol}`}
+                              stroke={COMPONENT_LINE_COLORS[idx % COMPONENT_LINE_COLORS.length]}
+                              strokeWidth={1.4}
+                              dot={false}
+                              strokeDasharray="3 2"
+                              connectNulls
+                              name={`${inst.symbol} (100 = start)`}
+                            />
+                          ))}
                         {overlaySpy && hasBasketOverlayData && (
                           <Line
                             type="monotone"
