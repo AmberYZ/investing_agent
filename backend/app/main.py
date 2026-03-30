@@ -2035,6 +2035,20 @@ def get_theme_narrative_shifts(theme_id: int, db: Session = Depends(get_db)):
     return [NarrativeShiftOut(date=d, description=desc) for d, desc in shifts[:10]]
 
 
+def _theme_metrics_since(months: int, start: Optional[dt.date]) -> dt.date:
+    """Start date for theme document/metrics queries: optional calendar start, else rolling months."""
+    today = dt.date.today()
+    if start is not None:
+        s = start
+        if s > today:
+            s = today
+        max_days = 15 * 365
+        if (today - s).days > max_days:
+            s = today - dt.timedelta(days=max_days)
+        return s
+    return today - dt.timedelta(days=months * 31)
+
+
 def _parse_date(value) -> dt.date:
     """Coerce query result (date or string) to date."""
     if value is None:
@@ -2149,10 +2163,11 @@ def _theme_metrics_from_evidence(
 @app.get("/themes/{theme_id}/metrics", response_model=list[ThemeDailyMetricOut])
 def get_theme_metrics(
     theme_id: int,
-    months: int = Query(6, ge=1, le=12, description="Time range in months (1-12)"),
+    months: int = Query(6, ge=1, le=12, description="Time range in months (1-12); ignored if start is set"),
+    start: Optional[dt.date] = Query(None, description="If set, metrics from this date through today (overrides months)."),
     db: Session = Depends(get_db),
 ):
-    since = dt.date.today() - dt.timedelta(days=months * 31)
+    since = _theme_metrics_since(months, start)
     rows = (
         db.query(ThemeMentionsDaily)
         .filter(ThemeMentionsDaily.theme_id == theme_id, ThemeMentionsDaily.date >= since)
@@ -2415,26 +2430,29 @@ def suggest_theme_instruments(theme_id: int, db: Session = Depends(get_db)):
 def get_instrument_prices(
     symbol: str,
     months: int = Query(6, ge=1, le=12),
+    start: Optional[dt.date] = Query(None, description="If set, EOD from this date through today (overrides months)."),
 ):
     """Price history, valuation (trailing/forward PE, PEG), analyst ratings, EPS growth (0y/1y), and technical indicators via EODHD."""
     from app.market_data import get_prices_and_valuation
-    return get_prices_and_valuation(symbol, months=months)
+    return get_prices_and_valuation(symbol, months=months, start_date=start)
 
 
 @app.get("/instruments/{symbol}/historical-pe")
 def get_instrument_historical_pe(
     symbol: str,
     months: int = Query(24, ge=6, le=60),
+    start: Optional[dt.date] = Query(None, description="If set, PE series from this date through today (overrides months window)."),
 ):
     """Historical trailing P/E series (daily close / trailing 4Q EPS) and current PE percentile for chart."""
     from app.market_data import get_historical_pe
-    return get_historical_pe(symbol, months=months)
+    return get_historical_pe(symbol, months=months, start_date=start)
 
 
 @app.get("/themes/{theme_id}/metrics-by-stance", response_model=list[ThemeMetricsByStanceOut])
 def get_theme_metrics_by_stance(
     theme_id: int,
     months: int = Query(6, ge=1, le=12),
+    start: Optional[dt.date] = Query(None, description="If set, from this date through today (overrides months)."),
     confidence: Optional[str] = Query(None, description="Filter by narrative confidence: 'fact', 'opinion', or omit for all"),
     db: Session = Depends(get_db),
 ):
@@ -2442,7 +2460,7 @@ def get_theme_metrics_by_stance(
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
-    since = dt.date.today() - dt.timedelta(days=months * 31)
+    since = _theme_metrics_since(months, start)
     doc_date = func.date(_doc_timestamp())
     q = (
         db.query(
@@ -2486,13 +2504,14 @@ def get_theme_metrics_by_stance(
 def get_theme_metrics_by_confidence(
     theme_id: int,
     months: int = Query(6, ge=1, le=12),
+    start: Optional[dt.date] = Query(None, description="If set, from this date through today (overrides months)."),
     db: Session = Depends(get_db),
 ):
     """Time-series of narrative mention counts by confidence_level (fact/opinion) for this theme."""
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
-    since = dt.date.today() - dt.timedelta(days=months * 31)
+    since = _theme_metrics_since(months, start)
     doc_date = func.date(_doc_timestamp())
     rows = (
         db.query(
@@ -2579,6 +2598,7 @@ def get_theme_stance_by_confidence(
 def get_theme_metrics_by_sub_theme(
     theme_id: int,
     months: int = Query(6, ge=1, le=12),
+    start: Optional[dt.date] = Query(None, description="If set, from this date through today (overrides months)."),
     db: Session = Depends(get_db),
 ):
     """Daily metrics per sub-theme for stacked share-of-voice chart.
@@ -2594,7 +2614,7 @@ def get_theme_metrics_by_sub_theme(
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
-    since = dt.date.today() - dt.timedelta(days=months * 31)
+    since = _theme_metrics_since(months, start)
 
     doc_date = func.date(_doc_timestamp())
     from_ev = (

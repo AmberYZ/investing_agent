@@ -18,7 +18,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000"
 const PRICE_CACHE_TTL_MS = 14 * 60 * 1000; // 14 min; match backend cache so refresh doesn't refetch
 const QUOTE_STORAGE_KEY = "investing_quote";
 /** Bump when API response schema changes (e.g. new metrics) to invalidate stale sessionStorage. */
-const QUOTE_CACHE_VERSION = 2;
+const QUOTE_CACHE_VERSION = 3;
 
 type ThemeInstrument = {
   id: number;
@@ -175,6 +175,10 @@ const STANCE_COLORS: Record<string, string> = {
 };
 const COMPONENT_LINE_COLORS = ["#22c55e", "#8b5cf6", "#ec4899", "#14b8a6", "#ef4444", "#6366f1", "#f97316", "#06b6d4", "#a3a3a3"];
 
+/** Legend toggle keys for basket chart (components use ticker symbol). */
+const LEGEND_KEY_BASKET = "__basket__";
+const LEGEND_KEY_SPY = "__spy__";
+
 function dominantStance(m: ThemeMetricsByStance): string {
   if (!m.total_count) return "neutral";
   const counts = [
@@ -255,12 +259,15 @@ function buildBasketSeries(
 export function ThemeInstruments({
   themeId,
   months = 6,
+  chartStartIso = null,
   compactLayout,
   embedded,
 }: {
   themeId: string;
-  /** Time range in months (6 or 12) — drives price and historical PE chart range */
+  /** Time range in months (6 or 12) — drives price and historical PE chart range when chartStartIso is not set */
   months?: number;
+  /** If set (YYYY-MM-DD), charts from this date through today (overrides months) */
+  chartStartIso?: string | null;
   /** When true, omit top margin for use in grid layout */
   compactLayout?: boolean;
   /** When true, render without section border/title for embedding in basket card (full chart UI: Single/Basket, tickers, overlays) */
@@ -297,6 +304,8 @@ export function ThemeInstruments({
   const [spyQuote, setSpyQuote] = useState<InstrumentQuote | null>(null);
   const [spyQuoteLoading, setSpyQuoteLoading] = useState(false);
   const [overlayRsi, setOverlayRsi] = useState(false);
+  /** When true, that series is hidden on the basket chart (key: LEGEND_KEY_BASKET | LEGEND_KEY_SPY | symbol). */
+  const [basketSeriesHidden, setBasketSeriesHidden] = useState<Record<string, boolean>>({});
 
   const quoteCache = useRef<Map<string, { data: InstrumentQuote; fetchedAt: number }>>(new Map());
 
@@ -382,9 +391,30 @@ export function ThemeInstruments({
     });
   }, [dedupedInstruments]);
 
+  useEffect(() => {
+    setBasketSeriesHidden((prev) => {
+      const symSet = new Set(dedupedInstruments.map((i) => i.symbol));
+      const next = { ...prev };
+      let changed = false;
+      for (const k of Object.keys(next)) {
+        if (k !== LEGEND_KEY_BASKET && k !== LEGEND_KEY_SPY && !symSet.has(k)) {
+          delete next[k];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [dedupedInstruments]);
+
+  const toggleBasketLegendSeries = useCallback((key: string) => {
+    setBasketSeriesHidden((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const rangeKey = chartStartIso ?? `m${months}`;
+
   const loadQuote = useCallback(
     async (symbol: string, useCache = true): Promise<InstrumentQuote | null> => {
-      const cacheKey = `${symbol}-${months}`;
+      const cacheKey = `${symbol}-${rangeKey}`;
       const cached = quoteCache.current.get(cacheKey);
       if (useCache && cached && Date.now() - cached.fetchedAt < PRICE_CACHE_TTL_MS) {
         return cached.data;
@@ -394,7 +424,10 @@ export function ThemeInstruments({
         quoteCache.current.set(cacheKey, { data: fromStorage, fetchedAt: Date.now() });
         return fromStorage;
       }
-      const res = await fetch(`${API_BASE}/instruments/${encodeURIComponent(symbol)}/prices?months=${months}`);
+      const qs = chartStartIso
+        ? `start=${encodeURIComponent(chartStartIso)}`
+        : `months=${months}`;
+      const res = await fetch(`${API_BASE}/instruments/${encodeURIComponent(symbol)}/prices?${qs}`);
       if (!res.ok) return null;
       const data = await res.json();
       const fetchedAt = Date.now();
@@ -402,22 +435,24 @@ export function ThemeInstruments({
       setQuoteInSessionStorage(cacheKey, data);
       return data;
     },
-    [months]
+    [months, chartStartIso]
   );
 
   const loadStance = useCallback(async () => {
-    const params = new URLSearchParams({ months: String(months) });
+    const params = new URLSearchParams();
+    if (chartStartIso) params.set("start", chartStartIso);
+    else params.set("months", String(months));
     if (narrativeConfidenceFilter !== "all") {
       params.set("confidence", narrativeConfidenceFilter);
     }
     const res = await fetch(`${API_BASE}/themes/${themeId}/metrics-by-stance?${params.toString()}`);
     if (!res.ok) return [];
     return res.json();
-  }, [themeId, months, narrativeConfidenceFilter]);
+  }, [themeId, months, chartStartIso, narrativeConfidenceFilter]);
 
   useEffect(() => {
     if (viewMode !== "single" || !selectedSymbol) return;
-    const cacheKey = `${selectedSymbol}-${months}`;
+    const cacheKey = `${selectedSymbol}-${rangeKey}`;
     const fromStorage = getQuoteFromSessionStorage(cacheKey);
     if (fromStorage) {
       quoteCache.current.set(cacheKey, { data: fromStorage, fetchedAt: Date.now() });
@@ -434,7 +469,7 @@ export function ThemeInstruments({
       setStanceData(Array.isArray(stance) ? stance : []);
       setQuoteLoading(false);
     });
-  }, [viewMode, selectedSymbol, loadQuote, loadStance, months]);
+  }, [viewMode, selectedSymbol, loadQuote, loadStance, rangeKey]);
 
   useEffect(() => {
     if (viewMode !== "single" || !selectedSymbol) {
@@ -443,13 +478,17 @@ export function ThemeInstruments({
     }
     setHistPeLoading(true);
     setHistPe(null);
-    fetch(`${API_BASE}/instruments/${encodeURIComponent(selectedSymbol)}/historical-pe?months=${months}`)
+    fetch(
+      `${API_BASE}/instruments/${encodeURIComponent(selectedSymbol)}/historical-pe?${
+        chartStartIso ? `start=${encodeURIComponent(chartStartIso)}` : `months=${months}`
+      }`
+    )
       .then((res) => (res.ok ? res.json() : null))
       .then((data: HistoricalPEResponse | null) => {
         setHistPe(data ?? null);
       })
       .finally(() => setHistPeLoading(false));
-  }, [viewMode, selectedSymbol, months]);
+  }, [viewMode, selectedSymbol, months, chartStartIso]);
 
   // Fetch SPY prices when overlay is enabled (same EODHD endpoint, ticker SPY)
   useEffect(() => {
@@ -989,62 +1028,178 @@ export function ThemeInstruments({
                 {basketLoading ? (
                   <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
                 ) : basketSeries.length > 0 ? (
-                  <div className="mt-2 h-56 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={basketSeriesWithSpy} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
-                        <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v) => (v && String(v).slice(5)) || v} />
-                        <YAxis tick={{ fontSize: 10 }} domain={["auto", "auto"]} tickFormatter={(v) => Number(v).toFixed(0)} />
-                        <Tooltip
-                          content={({ active, payload }) => {
-                            if (!active || !payload?.length) return null;
-                            const p = payload[0]?.payload as BasketPointWithSpy | undefined;
-                            if (!p) return null;
-                            return (
-                              <div className="rounded border bg-white p-2 text-xs shadow dark:bg-zinc-900">
-                                <div className="font-medium">{p.date}</div>
-                                <div>Basket: {Number(p.value).toFixed(1)}</div>
-                                {overlaySpy && p.spyIndex != null && (
-                                  <div>SPY: {p.spyIndex.toFixed(1)}</div>
-                                )}
-                              </div>
-                            );
-                          }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="value"
-                          stroke="#3b82f6"
-                          strokeWidth={2}
-                          dot={false}
-                          name="Basket (100 = start)"
-                        />
-                        {showBasketComponents &&
-                          dedupedInstruments.map((inst, idx) => (
-                            <Line
-                              key={`component-${inst.symbol}`}
-                              type="monotone"
-                              dataKey={`inst_${inst.symbol}`}
-                              stroke={COMPONENT_LINE_COLORS[idx % COMPONENT_LINE_COLORS.length]}
-                              strokeWidth={1.4}
-                              dot={false}
-                              strokeDasharray="3 2"
-                              connectNulls
-                              name={`${inst.symbol} (100 = start)`}
-                            />
-                          ))}
-                        {overlaySpy && hasBasketOverlayData && (
+                  <div className="mt-2 w-full">
+                    <div className="h-56 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart
+                          data={basketSeriesWithSpy}
+                          margin={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                        >
+                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v) => (v && String(v).slice(5)) || v} />
+                          <YAxis tick={{ fontSize: 10 }} domain={["auto", "auto"]} tickFormatter={(v) => Number(v).toFixed(0)} />
+                          <Tooltip
+                            content={({ active, payload }) => {
+                              if (!active || !payload?.length) return null;
+                              const row = payload[0]?.payload as (BasketPointWithSpy & Record<string, unknown>) | undefined;
+                              if (!row) return null;
+                              const date = row.date;
+                              const rows: { label: string; value: number; color: string; dashed?: boolean }[] = [];
+                              if (!basketSeriesHidden[LEGEND_KEY_BASKET]) {
+                                rows.push({ label: "Basket", value: Number(row.value), color: "#3b82f6" });
+                              }
+                              if (
+                                overlaySpy &&
+                                row.spyIndex != null &&
+                                Number.isFinite(Number(row.spyIndex)) &&
+                                !basketSeriesHidden[LEGEND_KEY_SPY]
+                              ) {
+                                rows.push({ label: "SPY", value: Number(row.spyIndex), color: "#f59e0b", dashed: true });
+                              }
+                              if (showBasketComponents) {
+                                dedupedInstruments.forEach((inst, idx) => {
+                                  if (basketSeriesHidden[inst.symbol]) return;
+                                  const key = `inst_${inst.symbol}`;
+                                  const v = row[key];
+                                  if (typeof v === "number" && Number.isFinite(v)) {
+                                    rows.push({
+                                      label: inst.symbol,
+                                      value: v,
+                                      color: COMPONENT_LINE_COLORS[idx % COMPONENT_LINE_COLORS.length],
+                                      dashed: true,
+                                    });
+                                  }
+                                });
+                              }
+                              return (
+                                <div className="max-h-64 min-w-[10rem] overflow-y-auto rounded border border-zinc-200 bg-white p-2 text-xs shadow dark:border-zinc-700 dark:bg-zinc-900">
+                                  <div className="mb-1.5 font-medium text-zinc-900 dark:text-zinc-100">{date}</div>
+                                  <ul className="space-y-1">
+                                    {rows.map((r) => (
+                                      <li key={r.label} className="flex items-center justify-between gap-4 tabular-nums">
+                                        <span className="flex min-w-0 items-center gap-2">
+                                          <span
+                                            className="inline-block h-0 w-6 shrink-0 border-t-2"
+                                            style={{
+                                              borderColor: r.color,
+                                              borderStyle: r.dashed ? "dashed" : "solid",
+                                            }}
+                                          />
+                                          <span className="truncate text-zinc-700 dark:text-zinc-300">{r.label}</span>
+                                        </span>
+                                        <span className="font-medium text-zinc-900 dark:text-zinc-100">{r.value.toFixed(1)}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              );
+                            }}
+                          />
                           <Line
                             type="monotone"
-                            dataKey="spyIndex"
-                            stroke="#f59e0b"
+                            dataKey="value"
+                            stroke="#3b82f6"
                             strokeWidth={2}
-                            strokeDasharray="4 2"
                             dot={false}
-                            name="SPY (100 = start)"
+                            name="Basket"
+                            hide={!!basketSeriesHidden[LEGEND_KEY_BASKET]}
                           />
-                        )}
-                      </ComposedChart>
-                    </ResponsiveContainer>
+                          {showBasketComponents &&
+                            dedupedInstruments.map((inst, idx) => (
+                              <Line
+                                key={`component-${inst.symbol}`}
+                                type="monotone"
+                                dataKey={`inst_${inst.symbol}`}
+                                stroke={COMPONENT_LINE_COLORS[idx % COMPONENT_LINE_COLORS.length]}
+                                strokeWidth={1.4}
+                                dot={false}
+                                strokeDasharray="3 2"
+                                connectNulls
+                                name={inst.symbol}
+                                hide={!!basketSeriesHidden[inst.symbol]}
+                              />
+                            ))}
+                          {overlaySpy && hasBasketOverlayData && (
+                            <Line
+                              type="monotone"
+                              dataKey="spyIndex"
+                              stroke="#f59e0b"
+                              strokeWidth={2}
+                              strokeDasharray="4 2"
+                              dot={false}
+                              name="SPY"
+                              hide={!!basketSeriesHidden[LEGEND_KEY_SPY]}
+                            />
+                          )}
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                    {showBasketComponents && (
+                      <div
+                        className="mt-3 rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/40"
+                        role="list"
+                        aria-label="Basket chart legend"
+                      >
+                        <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                          Legend <span className="font-normal normal-case text-zinc-400">(click to show or hide)</span>
+                        </p>
+                        <div className="flex flex-wrap gap-x-4 gap-y-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleBasketLegendSeries(LEGEND_KEY_BASKET)}
+                            className={`flex min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left transition hover:bg-zinc-200/80 dark:hover:bg-zinc-800/80 ${basketSeriesHidden[LEGEND_KEY_BASKET] ? "opacity-45" : ""}`}
+                            title="Toggle basket line"
+                          >
+                            <span className="inline-block h-0.5 w-8 shrink-0 rounded-full bg-[#3b82f6]" aria-hidden />
+                            <span
+                              className={`text-xs font-medium text-zinc-800 dark:text-zinc-200 ${basketSeriesHidden[LEGEND_KEY_BASKET] ? "line-through" : ""}`}
+                            >
+                              Basket
+                            </span>
+                          </button>
+                          {dedupedInstruments.map((inst, idx) => {
+                            const hidden = !!basketSeriesHidden[inst.symbol];
+                            return (
+                              <button
+                                key={`leg-${inst.symbol}`}
+                                type="button"
+                                onClick={() => toggleBasketLegendSeries(inst.symbol)}
+                                className={`flex min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left transition hover:bg-zinc-200/80 dark:hover:bg-zinc-800/80 ${hidden ? "opacity-45" : ""}`}
+                                title={`Toggle ${inst.symbol}`}
+                              >
+                                <span
+                                  className="inline-block h-0 w-8 shrink-0 border-t-2 border-dashed"
+                                  style={{ borderColor: COMPONENT_LINE_COLORS[idx % COMPONENT_LINE_COLORS.length] }}
+                                  aria-hidden
+                                />
+                                <span
+                                  className={`max-w-[7rem] truncate text-xs font-medium text-zinc-800 dark:text-zinc-200 ${hidden ? "line-through" : ""}`}
+                                >
+                                  {inst.symbol}
+                                </span>
+                              </button>
+                            );
+                          })}
+                          {overlaySpy && hasBasketOverlayData && (
+                            <button
+                              type="button"
+                              onClick={() => toggleBasketLegendSeries(LEGEND_KEY_SPY)}
+                              className={`flex min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left transition hover:bg-zinc-200/80 dark:hover:bg-zinc-800/80 ${basketSeriesHidden[LEGEND_KEY_SPY] ? "opacity-45" : ""}`}
+                              title="Toggle SPY overlay"
+                            >
+                              <span
+                                className="inline-block h-0 w-8 shrink-0 border-t-2 border-dashed border-amber-500"
+                                aria-hidden
+                              />
+                              <span
+                                className={`text-xs font-medium text-zinc-800 dark:text-zinc-200 ${basketSeriesHidden[LEGEND_KEY_SPY] ? "line-through" : ""}`}
+                              >
+                                SPY
+                              </span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">No price data for basket yet. Data loads from cache or API.</p>

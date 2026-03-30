@@ -15,14 +15,15 @@ from __future__ import annotations
 import datetime as dt
 import threading
 import time
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import text
 
 from app.db import engine
 from app.settings import settings
 
-_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
+# Keys: (symbol, months) or (symbol, "start", iso_date)
+_CACHE: dict[tuple, tuple[float, dict[str, Any]]] = {}
 _ESTIMATES_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _EARNINGS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _last_request_time: float = 0.0
@@ -677,7 +678,12 @@ def compute_basket_period_returns(symbols: list[str], months: int = 6) -> dict[s
     return out
 
 
-def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
+def _fetch_one(
+    symbol: str,
+    *,
+    months: Optional[int] = None,
+    start_date: Optional[dt.date] = None,
+) -> dict[str, Any]:
     out: dict[str, Any] = {
         "symbol": symbol,
         "prices": [],
@@ -702,7 +708,17 @@ def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
 
     eodhd_symbol = _to_eodhd_symbol(symbol)
     end_date = dt.date.today()
-    start_date = end_date - dt.timedelta(days=months * 31)
+    if start_date is not None:
+        range_start = start_date
+        if range_start > end_date:
+            range_start = end_date
+        max_days = 15 * 365
+        if (end_date - range_start).days > max_days:
+            range_start = end_date - dt.timedelta(days=max_days)
+    elif months is not None:
+        range_start = end_date - dt.timedelta(days=months * 31)
+    else:
+        range_start = end_date - dt.timedelta(days=6 * 31)
 
     try:
         with httpx.Client(timeout=30.0) as client:
@@ -712,7 +728,7 @@ def _fetch_one(symbol: str, months: int) -> dict[str, Any]:
                 params={
                     "api_token": api_key,
                     "fmt": "json",
-                    "from": start_date.isoformat(),
+                    "from": range_start.isoformat(),
                     "to": end_date.isoformat(),
                 },
             )
@@ -1079,7 +1095,7 @@ def get_eps_growth(symbol: str) -> dict[str, Any]:
 PE_PERCENTILE_LOOKBACK_MONTHS = 60
 
 
-def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
+def get_historical_pe(symbol: str, months: int = 24, start_date: Optional[dt.date] = None) -> dict[str, Any]:
     """
     Build historical trailing P/E from EODHD prices and Earnings.History.
     Returns series (date, pe, close, trailing_12m_eps), current_pe, pe_percentile.
@@ -1102,7 +1118,10 @@ def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
         out["message"] = "EODHD API key not set."
         return out
 
-    prices_data = get_prices_and_valuation(symbol, months=PE_PERCENTILE_LOOKBACK_MONTHS)
+    if start_date is not None:
+        prices_data = get_prices_and_valuation(symbol, months=6, start_date=start_date)
+    else:
+        prices_data = get_prices_and_valuation(symbol, months=PE_PERCENTILE_LOOKBACK_MONTHS)
     all_prices = prices_data.get("prices") or []
     earn = get_earnings(symbol)
     quarters = earn.get("quarterly_earnings") or []
@@ -1130,8 +1149,12 @@ def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
         out["message"] = "Could not build PE series (insufficient quarters vs price dates)."
         return out
 
-    num_bars = months * TRADING_DAYS_PER_MONTH
-    out["series"] = full_series[-num_bars:] if num_bars < len(full_series) else full_series
+    if start_date is not None:
+        start_s = start_date.isoformat()
+        out["series"] = [x for x in full_series if x["date"] >= start_s]
+    else:
+        num_bars = months * TRADING_DAYS_PER_MONTH
+        out["series"] = full_series[-num_bars:] if num_bars < len(full_series) else full_series
     current = full_series[-1]
     out["current_pe"] = current["pe"]
     pes_5y = [x["pe"] for x in full_series]
@@ -1140,7 +1163,7 @@ def get_historical_pe(symbol: str, months: int = 24) -> dict[str, Any]:
     return out
 
 
-def get_prices_and_valuation(symbol: str, months: int = 6) -> dict[str, Any]:
+def get_prices_and_valuation(symbol: str, months: int = 6, start_date: Optional[dt.date] = None) -> dict[str, Any]:
     """
     Fetch OHLCV history and valuation for a ticker using EODHD.
     Cached; requests throttled.
@@ -1158,7 +1181,11 @@ def get_prices_and_valuation(symbol: str, months: int = 6) -> dict[str, Any]:
             "message": "Symbol required.",
         }
 
-    key = (symbol, months)
+    key: tuple
+    if start_date is not None:
+        key = (symbol, "start", start_date.isoformat())
+    else:
+        key = (symbol, months)
     now = time.monotonic()
     with _lock:
         if key in _CACHE:
@@ -1177,7 +1204,7 @@ def get_prices_and_valuation(symbol: str, months: int = 6) -> dict[str, Any]:
             time.sleep(_min_seconds_between_requests() - elapsed)
         _last_request_time = time.monotonic()
 
-    out = _fetch_one(symbol, months)
+    out = _fetch_one(symbol, months=months if start_date is None else None, start_date=start_date)
 
     with _lock:
         _last_request_time = time.monotonic()
@@ -1193,7 +1220,7 @@ def get_prices_and_valuation(symbol: str, months: int = 6) -> dict[str, Any]:
             if key in _CACHE:
                 cached_at, result = _CACHE[key]
                 return result
-        out2 = _fetch_one(symbol, months)
+        out2 = _fetch_one(symbol, months=months if start_date is None else None, start_date=start_date)
         with _lock:
             _last_request_time = time.monotonic()
             if not _is_rate_limit_error(out2.get("message") or ""):

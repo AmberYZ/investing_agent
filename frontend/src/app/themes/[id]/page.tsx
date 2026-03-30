@@ -3,6 +3,7 @@ import { FollowThemeButtonWrapper } from "./FollowThemeButtonWrapper";
 import { GroupThemeIntoParent } from "./GroupThemeIntoParent";
 import { MarkThemeAsRead } from "./MarkThemeAsRead";
 import { ThemeChartAndDayDocs } from "./ThemeChartAndDayDocs";
+import { ThemePageRangeControls } from "./ThemePageRangeControls";
 import { ThemeConfidenceChart } from "./ThemeConfidenceChart";
 import { ThemeInstruments } from "./ThemeInstruments";
 import { ThemeNotes } from "./ThemeNotes";
@@ -88,30 +89,47 @@ type ThemeDocument = {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
+/** Validated YYYY-MM-DD start for charts, or null. */
+function parseChartStart(raw: string | undefined): string | null {
+  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const d = new Date(`${raw}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  const end = new Date();
+  end.setHours(23, 59, 59, 999);
+  if (d > end) return null;
+  const min = new Date();
+  min.setFullYear(min.getFullYear() - 15);
+  if (d < min) return null;
+  return raw;
+}
+
 async function getTheme(id: string): Promise<ThemeDetail | null> {
   const res = await fetch(`${API_BASE}/themes/${id}`, { cache: "no-store" });
   if (!res.ok) return null;
   return res.json();
 }
 
-async function getThemeMetrics(id: string, months: number): Promise<ThemeDailyMetric[]> {
-  const res = await fetch(`${API_BASE}/themes/${id}/metrics?months=${months}`, {
+async function getThemeMetrics(id: string, months: number, chartStartIso: string | null): Promise<ThemeDailyMetric[]> {
+  const q = chartStartIso ? `start=${encodeURIComponent(chartStartIso)}` : `months=${months}`;
+  const res = await fetch(`${API_BASE}/themes/${id}/metrics?${q}`, {
     cache: "no-store",
   });
   if (!res.ok) return [];
   return res.json();
 }
 
-async function getThemeMetricsByStance(id: string, months: number): Promise<ThemeMetricsByStance[]> {
-  const res = await fetch(`${API_BASE}/themes/${id}/metrics-by-stance?months=${months}`, {
+async function getThemeMetricsByStance(id: string, months: number, chartStartIso: string | null): Promise<ThemeMetricsByStance[]> {
+  const q = chartStartIso ? `start=${encodeURIComponent(chartStartIso)}` : `months=${months}`;
+  const res = await fetch(`${API_BASE}/themes/${id}/metrics-by-stance?${q}`, {
     cache: "no-store",
   });
   if (!res.ok) return [];
   return res.json();
 }
 
-async function getThemeMetricsBySubTheme(id: string, months: number): Promise<ThemeSubThemeDaily[]> {
-  const res = await fetch(`${API_BASE}/themes/${id}/metrics-by-sub-theme?months=${months}`, {
+async function getThemeMetricsBySubTheme(id: string, months: number, chartStartIso: string | null): Promise<ThemeSubThemeDaily[]> {
+  const q = chartStartIso ? `start=${encodeURIComponent(chartStartIso)}` : `months=${months}`;
+  const res = await fetch(`${API_BASE}/themes/${id}/metrics-by-sub-theme?${q}`, {
     cache: "no-store",
   });
   if (!res.ok) return [];
@@ -222,18 +240,19 @@ function PastMonthSentimentBar({ metricsByStance }: { metricsByStance: ThemeMetr
 export default async function ThemePage(
   props: {
     params: Promise<{ id: string }>;
-    searchParams: Promise<{ months?: string }>;
+    searchParams: Promise<{ months?: string; start?: string }>;
   }
 ) {
   const { id } = await props.params;
-  const { months: monthsParam } = await props.searchParams;
+  const { months: monthsParam, start: startParam } = await props.searchParams;
   const months = monthsParam === "12" ? 12 : 6;
+  const chartStartIso = parseChartStart(startParam);
 
   const [theme, metrics, metricsByStance, metricsBySubTheme, documents] = await Promise.all([
     getTheme(id),
-    getThemeMetrics(id, months),
-    getThemeMetricsByStance(id, months),
-    getThemeMetricsBySubTheme(id, months),
+    getThemeMetrics(id, months, chartStartIso),
+    getThemeMetricsByStance(id, months, chartStartIso),
+    getThemeMetricsBySubTheme(id, months, chartStartIso),
     getThemeDocuments(id),
   ]);
 
@@ -295,21 +314,7 @@ export default async function ThemePage(
                 childThemeIds={theme.child_theme_ids ?? []}
               />
             </div>
-            <div className="flex items-center gap-2">
-              <span>Range:</span>
-              <Link
-                href={`/themes/${id}?months=6`}
-                className={months === 6 ? "font-medium text-zinc-900 dark:text-zinc-100" : "hover:underline"}
-              >
-                6 months
-              </Link>
-              <Link
-                href={`/themes/${id}?months=12`}
-                className={months === 12 ? "font-medium text-zinc-900 dark:text-zinc-100" : "hover:underline"}
-              >
-                1 year
-              </Link>
-            </div>
+            <ThemePageRangeControls themeId={id} months={months} chartStartIso={chartStartIso} />
             {(metrics ?? []).length > 0 && (
               <div className="font-mono">
                 {metrics[0].date} → {metrics[metrics.length - 1].date}
@@ -328,7 +333,7 @@ export default async function ThemePage(
         <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-stretch">
           <div className="min-w-0 space-y-4">
             <ThemeTrackedResultsBox themeId={id} />
-            <ThemeInstruments themeId={id} months={months} compactLayout />
+            <ThemeInstruments themeId={id} months={months} chartStartIso={chartStartIso} compactLayout />
             <ThemeChartAndDayDocs
               metrics={metrics ?? []}
               metricsBySubTheme={metricsBySubTheme ?? []}
