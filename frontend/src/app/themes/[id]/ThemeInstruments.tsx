@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Line,
-  LabelList,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -179,54 +178,6 @@ const COMPONENT_LINE_COLORS = ["#22c55e", "#8b5cf6", "#ec4899", "#14b8a6", "#ef4
 /** Legend toggle keys for basket chart (components use ticker symbol). */
 const LEGEND_KEY_BASKET = "__basket__";
 const LEGEND_KEY_SPY = "__spy__";
-
-/** Last row index where `key` is a finite number (for end-of-line labels). */
-function lastDefinedNumericIndex(rows: Record<string, unknown>[], key: string): number {
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const v = rows[i][key];
-    if (typeof v === "number" && Number.isFinite(v)) return i;
-  }
-  return -1;
-}
-
-type BasketLabelListProps = {
-  x?: number;
-  y?: number;
-  index?: number;
-  value?: number;
-};
-
-function basketEndLabelContent(
-  props: BasketLabelListProps,
-  rows: Record<string, unknown>[],
-  dataKey: string,
-  label: string,
-  fill: string,
-  hidden: boolean
-) {
-  if (hidden) return null;
-  const { x, y, index } = props;
-  if (x == null || y == null || index == null) return null;
-  const lastIdx = lastDefinedNumericIndex(rows, dataKey);
-  if (lastIdx < 0 || index !== lastIdx) return null;
-  return (
-    <text
-      x={x}
-      y={y}
-      dx={8}
-      dy={0}
-      fill={fill}
-      fontSize={10}
-      fontWeight={600}
-      textAnchor="start"
-      dominantBaseline="middle"
-      className="select-none"
-      style={{ pointerEvents: "none" }}
-    >
-      {label}
-    </text>
-  );
-}
 
 function dominantStance(m: ThemeMetricsByStance): string {
   if (!m.total_count) return "neutral";
@@ -1082,7 +1033,7 @@ export function ThemeInstruments({
                       <ResponsiveContainer width="100%" height="100%">
                         <ComposedChart
                           data={basketSeriesWithSpy}
-                          margin={{ top: 10, right: 72, bottom: 8, left: 8 }}
+                          margin={{ top: 8, right: 8, bottom: 8, left: 8 }}
                         >
                           <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v) => (v && String(v).slice(5)) || v} />
                           <YAxis tick={{ fontSize: 10 }} domain={["auto", "auto"]} tickFormatter={(v) => Number(v).toFixed(0)} />
@@ -1114,7 +1065,7 @@ export function ThemeInstruments({
                                       label: inst.symbol,
                                       value: v,
                                       color: COMPONENT_LINE_COLORS[idx % COMPONENT_LINE_COLORS.length],
-                                      dashed: false,
+                                      dashed: true,
                                     });
                                   }
                                 });
@@ -1151,21 +1102,7 @@ export function ThemeInstruments({
                             dot={false}
                             name="Basket"
                             hide={!!basketSeriesHidden[LEGEND_KEY_BASKET]}
-                          >
-                            <LabelList
-                              dataKey="value"
-                              content={(props) =>
-                                basketEndLabelContent(
-                                  props as BasketLabelListProps,
-                                  basketSeriesWithSpy as Record<string, unknown>[],
-                                  "value",
-                                  "Basket",
-                                  "#2563eb",
-                                  !!basketSeriesHidden[LEGEND_KEY_BASKET]
-                                )
-                              }
-                            />
-                          </Line>
+                          />
                           {showBasketComponents &&
                             dedupedInstruments.map((inst, idx) => (
                               <Line
@@ -1175,24 +1112,11 @@ export function ThemeInstruments({
                                 stroke={COMPONENT_LINE_COLORS[idx % COMPONENT_LINE_COLORS.length]}
                                 strokeWidth={1.4}
                                 dot={false}
+                                strokeDasharray="3 2"
                                 connectNulls
                                 name={inst.symbol}
                                 hide={!!basketSeriesHidden[inst.symbol]}
-                              >
-                                <LabelList
-                                  dataKey={`inst_${inst.symbol}`}
-                                  content={(props) =>
-                                    basketEndLabelContent(
-                                      props as BasketLabelListProps,
-                                      basketSeriesWithSpy as Record<string, unknown>[],
-                                      `inst_${inst.symbol}`,
-                                      inst.symbol,
-                                      COMPONENT_LINE_COLORS[idx % COMPONENT_LINE_COLORS.length],
-                                      !!basketSeriesHidden[inst.symbol]
-                                    )
-                                  }
-                                />
-                              </Line>
+                              />
                             ))}
                           {overlaySpy && hasBasketOverlayData && (
                             <Line
@@ -1204,21 +1128,7 @@ export function ThemeInstruments({
                               dot={false}
                               name="SPY"
                               hide={!!basketSeriesHidden[LEGEND_KEY_SPY]}
-                            >
-                              <LabelList
-                                dataKey="spyIndex"
-                                content={(props) =>
-                                  basketEndLabelContent(
-                                    props as BasketLabelListProps,
-                                    basketSeriesWithSpy as Record<string, unknown>[],
-                                    "spyIndex",
-                                    "SPY",
-                                    "#d97706",
-                                    !!basketSeriesHidden[LEGEND_KEY_SPY]
-                                  )
-                                }
-                              />
-                            </Line>
+                            />
                           )}
                         </ComposedChart>
                       </ResponsiveContainer>
@@ -1257,8 +1167,8 @@ export function ThemeInstruments({
                                 title={`Toggle ${inst.symbol}`}
                               >
                                 <span
-                                  className="inline-block h-0.5 w-8 shrink-0 rounded-full"
-                                  style={{ backgroundColor: COMPONENT_LINE_COLORS[idx % COMPONENT_LINE_COLORS.length] }}
+                                  className="inline-block h-0 w-8 shrink-0 border-t-2 border-dashed"
+                                  style={{ borderColor: COMPONENT_LINE_COLORS[idx % COMPONENT_LINE_COLORS.length] }}
                                   aria-hidden
                                 />
                                 <span
