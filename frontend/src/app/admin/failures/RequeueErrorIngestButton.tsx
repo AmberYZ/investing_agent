@@ -21,7 +21,7 @@ export function RequeueErrorIngestButton() {
         return;
       }
       const count = data?.requeued ?? 0;
-      setMessage(count ? `Requeued ${count} job(s).` : "No error jobs to requeue.");
+      setMessage(count ? `Requeued ${count} job(s).` : "No error or skipped jobs to requeue.");
       window.dispatchEvent(new Event("ingest-jobs-changed"));
       router.refresh();
     } catch (e) {
@@ -39,7 +39,7 @@ export function RequeueErrorIngestButton() {
         disabled={loading}
         className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-800 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-200 dark:hover:bg-emerald-900"
       >
-        {loading ? "Requeuing…" : "Requeue cancelled & error jobs"}
+        {loading ? "Requeuing…" : "Requeue error & skipped jobs"}
       </button>
       {message && (
         <span className="text-xs text-zinc-600 dark:text-zinc-400">{message}</span>

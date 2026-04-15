@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Reset ingest jobs in 'error' back to 'queued' so the worker will retry them.
+Reset ingest jobs in 'error' or 'skipped' back to 'queued' so the worker will retry them.
 
-Use this after fixing the cause of failures (e.g. API key, network) or to retry
-jobs that were cancelled via cancel_ingest_jobs.py.
+Use this after fixing the cause of failures (e.g. API key, network), after adjusting
+processing_exclude.json for skipped jobs, or to retry jobs that were cancelled via cancel_ingest_jobs.py.
 
 Run from the backend directory:
     .venv/bin/python scripts/requeue_error_ingest_jobs.py
@@ -30,7 +30,7 @@ def requeue_error_jobs() -> int:
         result = conn.execute(
             update(IngestJob)
             .where(
-                IngestJob.status == "error",
+                IngestJob.status.in_(["error", "skipped"]),
                 IngestJob.created_at >= cutoff,
             )
             .values(
@@ -45,4 +45,4 @@ def requeue_error_jobs() -> int:
 
 if __name__ == "__main__":
     n = requeue_error_jobs()
-    print(f"Requeued {n} error ingest job(s) (error -> queued). Worker will retry them.")
+    print(f"Requeued {n} ingest job(s) (error or skipped -> queued). Worker will retry them.")

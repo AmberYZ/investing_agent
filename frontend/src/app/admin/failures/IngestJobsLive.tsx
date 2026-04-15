@@ -30,6 +30,8 @@ function statusBadge(status: string) {
       return `${base} border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300`;
     case "done":
       return `${base} border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-300`;
+    case "skipped":
+      return `${base} border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200`;
     case "error":
       return `${base} border-red-300 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300`;
     default:
@@ -110,9 +112,11 @@ export function IngestJobsLive() {
   const processingCount = jobs.filter((j) => j.status === "processing").length;
   const errorCount = jobs.filter((j) => j.status === "error").length;
   const doneCount = jobs.filter((j) => j.status === "done").length;
+  const skippedCount = jobs.filter((j) => j.status === "skipped").length;
 
-  const nonDoneJobs = jobs.filter((j) => j.status !== "done");
-  const doneJobs = jobs.filter((j) => j.status === "done").slice(0, 100);
+  const settled = (s: string) => s === "done" || s === "skipped";
+  const nonDoneJobs = jobs.filter((j) => !settled(j.status));
+  const doneJobs = jobs.filter((j) => settled(j.status)).slice(0, 100);
   const displayJobs = [...nonDoneJobs, ...doneJobs];
   const hasActiveJobs = queuedCount > 0 || processingCount > 0;
 
@@ -153,7 +157,7 @@ export function IngestJobsLive() {
               Error <span className="font-semibold">{errorCount}</span>
             </span>
             <span className="text-xs text-zinc-500 dark:text-zinc-400">
-              ({doneCount} done — showing up to 100)
+              ({doneCount} done{skippedCount > 0 ? `, ${skippedCount} skipped` : ""} — showing up to 100 settled)
             </span>
             {lastUpdated && (
               <span className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400 dark:text-zinc-500">

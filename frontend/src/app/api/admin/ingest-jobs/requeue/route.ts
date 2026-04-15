@@ -31,7 +31,7 @@ export async function POST() {
       timeout: 15000,
       env,
     });
-    const match = out.match(/Requeued (\d+) error ingest job/);
+    const match = out.match(/Requeued (\d+) ingest job/);
     const requeued = match ? parseInt(match[1], 10) : 0;
     return NextResponse.json({ requeued });
   } catch (e) {

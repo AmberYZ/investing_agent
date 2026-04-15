@@ -9,7 +9,7 @@ export default function FailuresPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Ingest jobs</h1>
           <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-            All ingest jobs: queued, in progress, done, and failed. Failed jobs can be requeued for retry.
+            All ingest jobs: queued, in progress, done, skipped (processing_exclude.json), and failed. Error and skipped jobs can be requeued for retry.
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-4">
             <CancelPendingIngestButton />

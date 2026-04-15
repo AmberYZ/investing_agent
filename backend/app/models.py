@@ -53,7 +53,7 @@ class IngestJob(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
-    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)  # queued|processing|done|error
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)  # queued|processing|done|error|skipped
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc), index=True)
     started_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

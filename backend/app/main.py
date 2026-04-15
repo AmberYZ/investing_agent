@@ -2838,14 +2838,14 @@ def list_ingest_failures(limit: int = 50, db: Session = Depends(get_db)):
 def list_all_ingest_jobs(limit: int = 500, db: Session = Depends(get_db)):
     """Return all ingest jobs for the admin ingest-status view.
 
-    Always returns ALL queued, processing, and done jobs so live status is
+    Always returns ALL queued, processing, done, and skipped jobs so live status is
     accurate, then fills the remaining budget with the most recent error jobs.
     """
     # 1) Always include every queued / processing / done job (no limit).
     priority_jobs = (
         db.query(IngestJob)
         .options(joinedload(IngestJob.document))
-        .filter(IngestJob.status.in_(["queued", "processing", "done"]))
+        .filter(IngestJob.status.in_(["queued", "processing", "done", "skipped"]))
         .order_by(IngestJob.created_at.desc())
         .all()
     )
@@ -2883,8 +2883,9 @@ def list_all_ingest_jobs(limit: int = 500, db: Session = Depends(get_db)):
 
 @app.post("/admin/ingest-jobs/requeue", response_model=RequeueIngestJobsOut)
 def requeue_error_ingest_jobs():
-    """Reset recent ingest jobs in 'error' (cancelled or failed) back to 'queued' so the worker will retry them.
+    """Reset recent ingest jobs in 'error' or 'skipped' back to 'queued' so the worker will retry them.
 
+    Skipped jobs are typically excluded by processing_exclude.json; remove the rule before requeueing.
     Only jobs created within the last 7 days are requeued to avoid retrying very old failures.
     """
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
@@ -2892,7 +2893,7 @@ def requeue_error_ingest_jobs():
         result = conn.execute(
             update(IngestJob)
             .where(
-                IngestJob.status == "error",
+                IngestJob.status.in_(["error", "skipped"]),
                 IngestJob.created_at >= cutoff,
             )
             .values(

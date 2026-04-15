@@ -33,6 +33,7 @@ from app.models import (
     ThemeAlias,
     ThemeMergeReinforcement,
 )
+from app.processing_exclude import processing_exclude_match_reason
 from app.storage import get_storage
 from app.settings import settings
 
@@ -393,6 +394,18 @@ def _commit_with_retry(db: Session, max_attempts: int = 5) -> None:
 def process_job(db: Session, job: IngestJob) -> None:
     storage = get_storage()
     doc = db.query(Document).filter(Document.id == job.document_id).one()
+
+    exclude_reason = processing_exclude_match_reason(doc)
+    if exclude_reason:
+        now = dt.datetime.now(dt.timezone.utc)
+        job.status = "skipped"
+        job.started_at = job.started_at or now
+        job.finished_at = now
+        job.error_message = exclude_reason
+        _commit_with_retry(db)
+        JOB_PROCESSED.labels(status="skipped").inc()
+        logger.info("Skipped ingest job %s for document %s: %s", job.id, doc.id, exclude_reason)
+        return
 
     job.status = "processing"
     job.started_at = dt.datetime.now(dt.timezone.utc)
