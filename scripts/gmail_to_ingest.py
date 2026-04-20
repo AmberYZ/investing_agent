@@ -26,7 +26,7 @@ import base64
 import os
 import socket
 import sys
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Load repo root .env if present
@@ -243,7 +243,7 @@ def _resolve_label_ids(service, label_names: list[str]) -> list[str]:
 
 
 def load_state(state_path: str) -> tuple[str | None, set[str]]:
-    """Load last_synced date (YYYY/MM/DD) and set of processed message IDs."""
+    """Load last_synced marker and set of processed message IDs."""
     last_synced: str | None = None
     ids: set[str] = set()
     if not os.path.exists(state_path):
@@ -261,7 +261,7 @@ def load_state(state_path: str) -> tuple[str | None, set[str]]:
 
 
 def save_state(state_path: str, last_synced: str, ids: set[str]) -> None:
-    """Save last_synced date and processed IDs for incremental sync."""
+    """Save last_synced marker and processed IDs for incremental sync."""
     lst = list(ids)
     if len(lst) > MAX_STATE_IDS:
         lst = lst[-MAX_STATE_IDS:]
@@ -269,6 +269,49 @@ def save_state(state_path: str, last_synced: str, ids: set[str]) -> None:
         f.write(f"last_synced={last_synced}\n")
         for i in lst:
             f.write(i + "\n")
+
+
+def _parse_last_synced_to_epoch(last_synced: str | None) -> int | None:
+    """
+    Convert state value to Gmail-compatible epoch seconds for `after:`.
+
+    Supports:
+    - Legacy format: YYYY/MM/DD
+    - ISO datetime strings (with or without timezone)
+    """
+    if not last_synced:
+        return None
+    raw = last_synced.strip()
+    if not raw:
+        return None
+
+    # Legacy date-only format used by older versions of this script.
+    try:
+        legacy_dt = datetime.strptime(raw, "%Y/%m/%d").replace(tzinfo=timezone.utc)
+        return int(legacy_dt.timestamp())
+    except ValueError:
+        pass
+
+    # ISO 8601 marker written by newer versions.
+    try:
+        iso = raw
+        if iso.endswith("Z"):
+            iso = iso[:-1] + "+00:00"
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except ValueError:
+        print(
+            f"Warning: Unrecognized last_synced format '{raw}'. Ignoring incremental cursor for this run.",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _now_sync_marker() -> str:
+    """Return UTC timestamp marker persisted in state."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def main() -> None:
@@ -295,8 +338,9 @@ def main() -> None:
     last_synced, processed = load_state(state_path)
     all_message_ids: set[str] = set()
     list_kw_base: dict = {"userId": "me", "maxResults": 100}
-    if last_synced:
-        list_kw_base["q"] = f"after:{last_synced}"
+    after_epoch = _parse_last_synced_to_epoch(last_synced)
+    if after_epoch is not None:
+        list_kw_base["q"] = f"after:{after_epoch}"
     try:
         for label_id in label_ids:
             list_kw = {**list_kw_base, "labelIds": [label_id]}
@@ -374,9 +418,8 @@ def main() -> None:
                     file=sys.stderr,
                 )
 
-    today = date.today().strftime("%Y/%m/%d")
-    # Only advance last_synced when no failures, so next run will retry failed messages (same date range).
-    next_synced = (last_synced if had_failure and last_synced else today)
+    # Only advance last_synced when no failures, so next run will retry failed messages (same range).
+    next_synced = (last_synced if had_failure and last_synced else _now_sync_marker())
     save_state(state_path, next_synced, processed)
     if new_count:
         print(f"Done. Ingested {new_count} new message(s).")
