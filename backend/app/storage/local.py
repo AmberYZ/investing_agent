@@ -23,3 +23,10 @@ class LocalStorage(StorageBackend):
         path = Path(uri[len('file://') :])
         return path.read_bytes()
 
+    def delete_object(self, *, uri: str) -> None:
+        if not uri.startswith("file://"):
+            raise ValueError(f"Unsupported local uri: {uri}")
+        path = Path(uri[len("file://") :])
+        if path.exists():
+            path.unlink()
+

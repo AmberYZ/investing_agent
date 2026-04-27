@@ -39,6 +39,20 @@ class GcsStorage(StorageBackend):
         blob = bucket.blob(blob_name)
         return blob.download_as_bytes()
 
+    def delete_object(self, *, uri: str) -> None:
+        if not uri.startswith("gs://"):
+            raise ValueError(f"Unsupported gcs uri: {uri}")
+        _, rest = uri.split("gs://", 1)
+        bucket_name, blob_name = rest.split("/", 1)
+        bucket = self.client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        # Ignore if already gone (idempotent delete).
+        try:
+            blob.delete(if_generation_match=None)
+        except Exception:
+            if blob.exists():
+                raise
+
     def generate_signed_url(self, *, uri: str, expires_in: int = 3600) -> str:
         """
         Generate a V4 signed URL for a given gs:// URI.

@@ -15,3 +15,6 @@ class StorageBackend:
     def download_bytes(self, *, uri: str) -> bytes:  # pragma: no cover
         raise NotImplementedError
 
+    def delete_object(self, *, uri: str) -> None:  # pragma: no cover
+        raise NotImplementedError
+

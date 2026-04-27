@@ -63,6 +63,15 @@ class DocumentOut(BaseModel):
     text_download_url: Optional[str] = None
 
 
+class DocumentDeleteOut(BaseModel):
+    deleted: bool = True
+    document_id: int
+    filename: str
+    deleted_storage_objects: int = 0
+    pruned_narratives: int = 0
+    pruned_themes: int = 0
+
+
 class EvidenceOut(BaseModel):
     id: int
     quote: str

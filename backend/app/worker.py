@@ -18,6 +18,7 @@ from app.extract.disclosure_trim import trim_disclosure_sections
 from app.extract.html_text import html_to_plain_text
 from app.extract.pdf_text import PageText, extract_text_from_pdf
 from app.llm.api_extract import extract_themes_and_narratives as extract_via_llm_api
+from app.llm.relevance import classify_document_relevance, should_skip_as_non_investment
 from app.llm.heuristic import heuristic_extract
 from app.llm.embeddings import embed_texts, is_embedding_available
 from app.llm.vertex import extract_themes_and_narratives as extract_via_vertex
@@ -462,6 +463,33 @@ def _process_job_inner(db: Session, job: IngestJob, doc: Document, storage) -> N
         logger.info("job_id=%s doc_id=%s: disclosure trim %d -> %d chars", job.id, doc.id, len_full, len_llm)
     # Prepend document title and first pages so extraction weights them for the main theme
     text_for_llm = _build_text_for_extraction(doc.filename, pages, text_for_llm)
+
+    if getattr(settings, "auto_investment_relevance_filter_enabled", False):
+        relevance = classify_document_relevance(
+            filename=doc.filename or "",
+            source_name=doc.source_name or "",
+            source_uri=doc.source_uri,
+            text=text_for_llm or full_text,
+        )
+        logger.info(
+            "job_id=%s doc_id=%s: relevance source=%s is_investment=%s confidence=%.2f reason=%s",
+            job.id,
+            doc.id,
+            relevance.source,
+            relevance.is_investment_related,
+            relevance.confidence,
+            relevance.reason,
+        )
+        if should_skip_as_non_investment(relevance):
+            job.status = "skipped"
+            job.error_message = (
+                "Skipped: auto non-investment filter "
+                f"(source={relevance.source}, confidence={relevance.confidence:.2f}, reason={relevance.reason})"
+            )
+            job.finished_at = dt.datetime.now(dt.timezone.utc)
+            db.commit()
+            return
+
     text_obj = storage.upload_bytes(
         key=f"text/{doc.id}.txt",
         data=full_text.encode("utf-8"),

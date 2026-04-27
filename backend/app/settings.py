@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     llm_extraction_max_chars: int = 300000
     # Force heuristic extraction (no LLM/Vertex). When true, ignores LLM_API_KEY and Vertex.
     use_heuristic_extraction: bool = False
+    # Auto-skip non-investment documents before theme extraction.
+    auto_investment_relevance_filter_enabled: bool = True
+    # Use LLM for relevance classification when LLM_API_KEY is available; falls back to keyword heuristic otherwise.
+    auto_investment_relevance_filter_use_llm: bool = True
+    # If LLM confidence is below this threshold, do not auto-skip (to reduce false negatives).
+    auto_investment_relevance_filter_min_confidence: float = 0.65
 
     # Theme deduplication: similarity-based resolution when exact/alias match fails.
     theme_similarity_use_embedding: bool = True  # use embedding similarity when embedding_provider is available

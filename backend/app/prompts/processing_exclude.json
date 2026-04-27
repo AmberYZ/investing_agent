@@ -1,7 +1,13 @@
 {
   "notes": "PDFs and other files are still uploaded and stored when ingested. If a file matches any rule below, the worker skips extraction, chunking, embeddings, and theme/narrative extraction. Use sha256 for an exact file (see ingest logs or Admin ingest jobs). Use filename_globs with shell-style patterns on the basename only. Use source_uri_contains for path fragments from the local watcher (source_uri is the full local path when using the ingest client). After removing a rule, use Admin → Requeue failed ingest jobs (also requeues skipped) to process again.",
-  "sha256": [],
+  "sha256": [
+    "639f03c5d9b22ca6df3b685d88f0448d9d00bb0181e6591baa0bdae5aa2f39bc",
+    "fceab6da7a7f9533792c6b59530119301d06645e45dbf363dd71a7fb2fe704e0"
+  ],
   "filename_globs": [],
-  "filename_contains": [],
+  "filename_contains": [
+    "invitation letter",
+    "renewal agreement"
+  ],
   "source_uri_contains": []
 }

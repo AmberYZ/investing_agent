@@ -74,6 +74,7 @@ from app.schemas import (
     RequeueIngestJobsOut,
     DocumentExcerptsOut,
     DocumentExcerptOut,
+    DocumentDeleteOut,
     DocumentOut,
     EvidenceOut,
     ExtractionPromptOut,
@@ -1844,6 +1845,67 @@ def get_document(document_id: int, db: Session = Depends(get_db)):
         gcs_text_uri=doc.gcs_text_uri,
         download_url=download_url,
         text_download_url=text_download_url,
+    )
+
+
+@app.delete("/documents/{document_id}", response_model=DocumentDeleteOut)
+def delete_document(document_id: int, db: Session = Depends(get_db)):
+    """
+    Delete one processed document and its derived artifacts.
+    Also prunes orphaned narratives/themes created solely by that document.
+    """
+    doc = db.query(Document).filter(Document.id == document_id).one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    filename = doc.filename
+    uris = [u for u in [doc.gcs_raw_uri, doc.gcs_text_uri] if u]
+
+    db.delete(doc)
+
+    orphan_narratives = (
+        db.query(Narrative)
+        .outerjoin(Evidence, Evidence.narrative_id == Narrative.id)
+        .group_by(Narrative.id)
+        .having(func.count(Evidence.id) == 0)
+        .all()
+    )
+    pruned_narratives = len(orphan_narratives)
+    for n in orphan_narratives:
+        db.delete(n)
+
+    orphan_themes = (
+        db.query(Theme)
+        .outerjoin(Narrative, Narrative.theme_id == Theme.id)
+        .group_by(Theme.id)
+        .having(func.count(Narrative.id) == 0)
+        .all()
+    )
+    pruned_themes = 0
+    for t in orphan_themes:
+        if is_followed(t.id):
+            continue
+        delete_theme_cascade(db, t.id)
+        pruned_themes += 1
+
+    db.commit()
+
+    storage = get_storage()
+    deleted_storage_objects = 0
+    for uri in uris:
+        try:
+            storage.delete_object(uri=uri)
+            deleted_storage_objects += 1
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to delete storage object %s for deleted doc_id=%s: %s", uri, document_id, e)
+
+    return DocumentDeleteOut(
+        deleted=True,
+        document_id=document_id,
+        filename=filename,
+        deleted_storage_objects=deleted_storage_objects,
+        pruned_narratives=pruned_narratives,
+        pruned_themes=pruned_themes,
     )
 
 

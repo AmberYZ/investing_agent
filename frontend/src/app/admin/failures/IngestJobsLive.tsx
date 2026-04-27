@@ -68,6 +68,8 @@ export function IngestJobsLive() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [deletingDocIds, setDeletingDocIds] = useState<Record<number, boolean>>({});
+  const [actionError, setActionError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
 
@@ -119,6 +121,36 @@ export function IngestJobsLive() {
   const doneJobs = jobs.filter((j) => settled(j.status)).slice(0, 100);
   const displayJobs = [...nonDoneJobs, ...doneJobs];
   const hasActiveJobs = queuedCount > 0 || processingCount > 0;
+
+  const deleteDocument = useCallback(
+    async (job: IngestJob) => {
+      if (deletingDocIds[job.document_id]) return;
+      const label = job.filename ?? `doc #${job.document_id}`;
+      const ok = window.confirm(
+        `Delete processed file?\n\n${label}\n\nThis removes the document and derived extracted data.`
+      );
+      if (!ok) return;
+      setActionError(null);
+      setDeletingDocIds((prev) => ({ ...prev, [job.document_id]: true }));
+      try {
+        const res = await fetch(`${API_BASE}/documents/${job.document_id}`, {
+          method: "DELETE",
+        });
+        if (!res.ok) {
+          const msg = await res.text();
+          throw new Error(msg || `HTTP ${res.status}`);
+        }
+        await doFetch();
+      } catch (e) {
+        setActionError(
+          e instanceof Error ? `Delete failed for doc ${job.document_id}: ${e.message}` : "Delete failed."
+        );
+      } finally {
+        setDeletingDocIds((prev) => ({ ...prev, [job.document_id]: false }));
+      }
+    },
+    [deletingDocIds, doFetch]
+  );
 
   if (loading && jobs.length === 0) {
     return (
@@ -177,6 +209,11 @@ export function IngestJobsLive() {
               Queued jobs are processed one at a time by the <strong>ingest worker</strong>. If jobs stay queued, check the terminal where you ran <code className="rounded bg-amber-100 px-1 dark:bg-amber-900">./dev.sh</code>: the worker should log &quot;Starting ingest job&quot; and use your LLM (OpenAI/Vertex). Ensure <code className="rounded bg-amber-100 px-1 dark:bg-amber-900">LLM_API_KEY</code> is set in the repo <code className="rounded bg-amber-100 px-1 dark:bg-amber-900">.env</code> and the worker process is running.
             </p>
           )}
+          {actionError && (
+            <p className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
+              {actionError}
+            </p>
+          )}
         </>
       )}
 
@@ -196,6 +233,7 @@ export function IngestJobsLive() {
                 <th className="px-3 py-2 text-left">Status</th>
                 <th className="px-3 py-2 text-left">Created</th>
                 <th className="px-3 py-2 text-left">Error</th>
+                <th className="px-3 py-2 text-left">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -219,6 +257,16 @@ export function IngestJobsLive() {
                   </td>
                   <td className="max-w-xs px-3 py-2 text-[11px] text-zinc-700 dark:text-zinc-200">
                     <span className="line-clamp-3">{j.error_message ?? "—"}</span>
+                  </td>
+                  <td className="px-3 py-2 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => deleteDocument(j)}
+                      disabled={!!deletingDocIds[j.document_id]}
+                      className="rounded border border-red-300 px-2 py-1 font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/40"
+                    >
+                      {deletingDocIds[j.document_id] ? "Deleting..." : "Delete file"}
+                    </button>
                   </td>
                 </tr>
               ))}
