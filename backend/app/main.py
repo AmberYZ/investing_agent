@@ -1861,7 +1861,22 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
     filename = doc.filename
     uris = [u for u in [doc.gcs_raw_uri, doc.gcs_text_uri] if u]
 
+    affected_theme_ids = {
+        int(theme_id)
+        for (theme_id,) in (
+            db.query(Narrative.theme_id)
+            .join(Evidence, Evidence.narrative_id == Narrative.id)
+            .filter(Evidence.document_id == document_id)
+            .distinct()
+            .all()
+        )
+    }
+
+    # Explicitly remove evidence rows for this document first, so orphan checks are accurate
+    # even in environments where FK cascades are not enforced.
+    db.query(Evidence).filter(Evidence.document_id == document_id).delete(synchronize_session=False)
     db.delete(doc)
+    db.flush()
 
     orphan_narratives = (
         db.query(Narrative)
@@ -1885,8 +1900,18 @@ def delete_document(document_id: int, db: Session = Depends(get_db)):
     for t in orphan_themes:
         if is_followed(t.id):
             continue
-        delete_theme_cascade(db, t.id)
+        delete_theme_cascade(db, t)
         pruned_themes += 1
+        affected_theme_ids.discard(t.id)
+
+    if affected_theme_ids:
+        # Invalidate cached narrative/digest summaries for impacted themes.
+        db.query(ThemeNarrativeSummaryCache).filter(
+            ThemeNarrativeSummaryCache.theme_id.in_(affected_theme_ids)
+        ).delete(synchronize_session=False)
+        db.query(ThemeTradingDigestCache).filter(
+            ThemeTradingDigestCache.theme_id.in_(affected_theme_ids)
+        ).delete(synchronize_session=False)
 
     db.commit()
 
