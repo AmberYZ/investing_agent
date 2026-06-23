@@ -4,6 +4,10 @@
     "639f03c5d9b22ca6df3b685d88f0448d9d00bb0181e6591baa0bdae5aa2f39bc",
     "fceab6da7a7f9533792c6b59530119301d06645e45dbf363dd71a7fb2fe704e0"
   ],
+  "always_process_sha256": [
+    "ce73c4aacd74410cfa4481a64a800b355727138abf1f4f0a38c7047919531d86",
+    "c90bc25b6e81907732476ead0e242153c9b5d22c34bfca088afbeda81a2ccfb4"
+  ],
   "filename_globs": [],
   "filename_contains": [
     "invitation letter",

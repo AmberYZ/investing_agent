@@ -681,3 +681,32 @@ class BasketTickerRowOut(BaseModel):
     trailing_12m_eps: Optional[float] = None
     message: Optional[str] = None
 
+
+class InsightEvidenceOut(BaseModel):
+    """One citable source backing an insight hypothesis."""
+    document_id: Optional[int] = None
+    narrative_id: Optional[int] = None
+    theme_id: Optional[int] = None
+    document_title: Optional[str] = None
+    theme_label: Optional[str] = None
+    quote_snippet: Optional[str] = None
+
+
+class UniverseInsightItemOut(BaseModel):
+    """Single opportunity/risk or forward-looking deduction."""
+    title: str
+    kind: str  # opportunity | risk | sector | theme | company
+    hypothesis: str
+    reasoning: str
+    evidence: list[InsightEvidenceOut] = Field(default_factory=list)
+
+
+class UniverseInsightsOut(BaseModel):
+    """Cross-universe insights generated from recent narratives, themes, and documents."""
+    consensus: list[UniverseInsightItemOut] = Field(default_factory=list)
+    non_consensus: list[UniverseInsightItemOut] = Field(default_factory=list)
+    forward_look: list[UniverseInsightItemOut] = Field(default_factory=list)
+    generated_at: Optional[str] = None
+    lookback_days: int = 14
+    stale: bool = False
+

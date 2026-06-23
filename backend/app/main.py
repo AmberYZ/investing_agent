@@ -63,6 +63,7 @@ from app.models import (
     ThemeSubThemeMentionsDaily,
     ThemeTradingDigestCache,
     InstrumentMarketSnapshot,
+    UniverseInsightsCache,
 )
 from app.schemas import (
     AdminThemeOut,
@@ -105,6 +106,7 @@ from app.schemas import (
     ThemeDocumentNarrativeOut,
     ThemeDocumentOut,
     ThemeInsightsOut,
+    UniverseInsightsOut,
     ThemeMergeOut,
     ThemeMergeRequest,
     ThemeNetworkEdgeOut,
@@ -365,6 +367,71 @@ def _run_market_cache_refresh() -> None:
         db.close()
 
 
+def _run_universe_insights_refresh(*, force: bool = False) -> None:
+    """Generate cross-universe insights if stale (weekdays only unless force=True)."""
+    from app.universe_insights import generate_universe_insights
+
+    db = SessionLocal()
+    try:
+        generated = generate_universe_insights(db, force=force)
+        if generated:
+            logger.info("Universe insights refreshed")
+    except Exception as e:
+        logger.exception("Universe insights refresh failed: %s", e)
+    finally:
+        db.close()
+
+
+def _universe_insights_weekday_loop() -> None:
+    """Run universe insights generation once each weekday morning."""
+    from zoneinfo import ZoneInfo
+
+    enabled = getattr(settings, "universe_insights_weekday_refresh_enabled", True)
+    if not enabled:
+        return
+    hour = getattr(settings, "universe_insights_refresh_hour", 7)
+    minute = getattr(settings, "universe_insights_refresh_minute", 30)
+    tz_name = getattr(settings, "universe_insights_refresh_tz", "America/New_York")
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception as e:
+        logger.warning("Universe insights: invalid timezone %s: %s; skipping schedule", tz_name, e)
+        return
+    logger.info(
+        "Universe insights weekday refresh: scheduled at %02d:%02d %s (Mon-Fri)",
+        hour,
+        minute,
+        tz_name,
+    )
+    while True:
+        try:
+            now = dt.datetime.now(tz)
+            if now.weekday() >= 5:
+                # Sleep until next Monday 00:00
+                days_ahead = 7 - now.weekday()
+                next_run = (now + dt.timedelta(days=days_ahead)).replace(
+                    hour=hour, minute=minute, second=0, microsecond=0
+                )
+            else:
+                target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if now >= target:
+                    _run_universe_insights_refresh(force=False)
+                    target = (now + dt.timedelta(days=1)).replace(
+                        hour=hour, minute=minute, second=0, microsecond=0
+                    )
+                    while target.weekday() >= 5:
+                        target += dt.timedelta(days=1)
+                    next_run = target
+                else:
+                    next_run = target
+            sleep_seconds = max(60.0, (next_run - now).total_seconds())
+            logger.info("Universe insights: next run in %.0f s (at %s)", sleep_seconds, next_run.isoformat())
+            time.sleep(sleep_seconds)
+        except Exception as e:
+            logger.exception("Universe insights schedule failed: %s", e)
+            time.sleep(3600)
+
+
 def _market_refresh_after_close_loop() -> None:
     """Run market cache refresh daily at configured time (e.g. after US market close)."""
     from zoneinfo import ZoneInfo
@@ -438,6 +505,15 @@ def _startup():
             target=_market_refresh_after_close_loop,
             daemon=True,
             name="market_refresh_after_close",
+        )
+        t.start()
+    enable_universe_insights = getattr(settings, "universe_insights_weekday_refresh_enabled", True)
+    logger.info("Universe insights weekday refresh: enabled=%s", enable_universe_insights)
+    if enable_universe_insights:
+        t = threading.Thread(
+            target=_universe_insights_weekday_loop,
+            daemon=True,
+            name="universe_insights_weekday",
         )
         t.start()
 
@@ -1067,6 +1143,25 @@ def get_theme_related_news(theme_id: int, limit: int = Query(10, le=50), db: Ses
         )
         for n in items
     ]
+
+
+@app.get("/insights/universe", response_model=UniverseInsightsOut)
+def get_universe_insights_endpoint(db: Session = Depends(get_db)):
+    """Cached cross-universe insights: consensus, non-consensus, and forward look."""
+    from app.universe_insights import get_universe_insights
+
+    data = get_universe_insights(db)
+    return UniverseInsightsOut(**data)
+
+
+@app.post("/insights/universe/refresh", response_model=UniverseInsightsOut)
+def refresh_universe_insights_endpoint(db: Session = Depends(get_db)):
+    """Manually regenerate universe insights (may take 30-90s)."""
+    from app.universe_insights import generate_universe_insights, get_universe_insights
+
+    generate_universe_insights(db, force=True)
+    data = get_universe_insights(db)
+    return UniverseInsightsOut(**data)
 
 
 @app.get("/basket/trading-digest", response_model=dict[str, TradingDigestItemOut])

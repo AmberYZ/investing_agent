@@ -32,6 +32,7 @@ def processing_exclude_path() -> Path:
 @dataclass(frozen=True)
 class _ExcludeRules:
     sha256: frozenset[str]
+    always_process_sha256: frozenset[str]
     filename_globs: tuple[str, ...]
     filename_contains: tuple[str, ...]
     source_uri_contains: tuple[str, ...]
@@ -59,6 +60,7 @@ def _load_rules_uncached() -> _ExcludeRules:
     if not path.exists():
         return _ExcludeRules(
             sha256=frozenset(),
+            always_process_sha256=frozenset(),
             filename_globs=(),
             filename_contains=(),
             source_uri_contains=(),
@@ -75,12 +77,15 @@ def _load_rules_uncached() -> _ExcludeRules:
 
     sha_raw = _as_str_list(data.get("sha256"), "sha256")
     sha256 = frozenset(s.lower() for s in sha_raw if len(s) == 64)
+    force_raw = _as_str_list(data.get("always_process_sha256"), "always_process_sha256")
+    always_process_sha256 = frozenset(s.lower() for s in force_raw if len(s) == 64)
     globs = tuple(_as_str_list(data.get("filename_globs"), "filename_globs"))
     fn_contains = tuple(s.lower() for s in _as_str_list(data.get("filename_contains"), "filename_contains"))
     uri_contains = tuple(s.lower() for s in _as_str_list(data.get("source_uri_contains"), "source_uri_contains"))
 
     return _ExcludeRules(
         sha256=sha256,
+        always_process_sha256=always_process_sha256,
         filename_globs=globs,
         filename_contains=fn_contains,
         source_uri_contains=uri_contains,
@@ -140,3 +145,10 @@ def processing_exclude_match_reason(doc: Document) -> str | None:
                 return f"Skipped: source_uri contains {needle!r} (processing_exclude.json)"
 
     return None
+
+
+def processing_force_process(doc: Document) -> bool:
+    """True when sha256 is listed in always_process_sha256 (bypasses non-investment filter)."""
+    rules = get_processing_exclude_rules()
+    digest = (doc.sha256 or "").strip().lower()
+    return bool(digest and digest in rules.always_process_sha256)

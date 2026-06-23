@@ -349,6 +349,21 @@ def run_daily_aggregations(target_date: Optional[dt.date] = None) -> None:
             logging.getLogger("investing_agent.aggregations").warning(
                 "Trading digest generation failed: %s", e
             )
+
+        # 7) Cross-universe insights (weekdays only)
+        if dt.date.today().weekday() < 5:
+            try:
+                from app.universe_insights import generate_universe_insights
+                if generate_universe_insights(db):
+                    import logging
+                    logging.getLogger("investing_agent.aggregations").info(
+                        "Generated universe insights"
+                    )
+            except Exception as e:
+                import logging
+                logging.getLogger("investing_agent.aggregations").warning(
+                    "Universe insights generation failed: %s", e
+                )
     finally:
         db.close()
 

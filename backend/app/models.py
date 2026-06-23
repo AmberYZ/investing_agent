@@ -289,6 +289,19 @@ class InstrumentMarketSnapshot(Base):
     __table_args__ = (UniqueConstraint("symbol", "snapshot_date", name="uq_instrument_market_snapshot_symbol_date"),)
 
 
+class UniverseInsightsCache(Base):
+    """Pre-computed cross-universe market insights (consensus/non-consensus/forward look)."""
+    __tablename__ = "universe_insights_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    period: Mapped[str] = mapped_column(String(16), default="14d")
+    insights_json: Mapped[str] = mapped_column(Text)
+    lookback_days: Mapped[int] = mapped_column(Integer, default=14)
+    generated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc))
+
+    __table_args__ = (UniqueConstraint("period", name="uq_universe_insights_cache_period"),)
+
+
 class ThemeTradingDigestCache(Base):
     """Pre-computed LLM trading digest for a theme (prevailing, what changed, worries, trade ideas)."""
     __tablename__ = "theme_trading_digest_cache"

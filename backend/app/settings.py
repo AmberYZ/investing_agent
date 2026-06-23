@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     llm_model: str = "gpt-4o-mini"  # or gemini-1.5-flash, deepseek-chat, etc.
     # Optional: different model for trading digest (e.g. reasoning/long-context). If unset, uses llm_model.
     llm_trading_digest_model: str = "gpt-4o"  # e.g. gpt-4o, claude-3-5-sonnet, gemini-1.5-pro
+    # Optional: model for cross-universe insights page. If unset, uses llm_trading_digest_model.
+    llm_universe_insights_model: str = ""
+    universe_insights_lookback_days: int = 14
+    universe_insights_weekday_refresh_enabled: bool = True
+    universe_insights_refresh_hour: int = 7
+    universe_insights_refresh_minute: int = 30
+    universe_insights_refresh_tz: str = "America/New_York"
     llm_base_url: str = ""  # optional; e.g. https://api.deepseek.com for DeepSeek
     # Request timeout in seconds for LLM API calls (Gemini can be slow on long documents).
     llm_timeout_seconds: int = 180

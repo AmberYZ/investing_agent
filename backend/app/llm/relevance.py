@@ -66,8 +66,11 @@ def _llm_decision(filename: str, source_name: str, source_uri: str | None, text:
     system = (
         "You classify whether a document is related to investing/financial markets.\n"
         "Return ONLY JSON with keys: is_investment_related (bool), confidence (0..1), reason (string).\n"
-        "Investment-related includes equity/credit/macro/industry/company research and market strategy.\n"
-        "Not investment-related includes legal/admin/personal/event invitations/contracts unrelated to markets."
+        "Investment-related includes equity/credit/macro/industry/company research, market strategy, "
+        "semiconductor and AI infrastructure analysis, and technology industry research "
+        "(including research newsletters such as Semianalysis).\n"
+        "Not investment-related includes purely academic/engineering write-ups with no industry or market angle, "
+        "legal/admin/personal/event invitations/contracts unrelated to markets."
     )
     payload = {
         "filename": filename or "",

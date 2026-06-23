@@ -34,7 +34,7 @@ from app.models import (
     ThemeAlias,
     ThemeMergeReinforcement,
 )
-from app.processing_exclude import processing_exclude_match_reason
+from app.processing_exclude import processing_exclude_match_reason, processing_force_process
 from app.storage import get_storage
 from app.settings import settings
 
@@ -480,7 +480,7 @@ def _process_job_inner(db: Session, job: IngestJob, doc: Document, storage) -> N
             relevance.confidence,
             relevance.reason,
         )
-        if should_skip_as_non_investment(relevance):
+        if should_skip_as_non_investment(relevance) and not processing_force_process(doc):
             job.status = "skipped"
             job.error_message = (
                 "Skipped: auto non-investment filter "
