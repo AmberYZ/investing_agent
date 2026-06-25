@@ -1,32 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Simple "all-in-one" local dev runner for:
-# - Postgres (optional, via Docker Compose)
-# - Backend API (FastAPI)
-# - Ingest worker
-# - Ingest client (watcher)
-# - Frontend (Next.js)
+# One-command local dev: API + ingest worker + ingest watcher + frontend.
 #
 # Usage:
-#   chmod +x dev.sh
-#   ./dev.sh          # runs everything with defaults from .env
+#   ./dev.sh
 #
-# Notes:
-# - Requires: python3, node/npm, (optionally) docker + docker compose
-# - API, worker, and ingest client all use backend/.venv (both requirements files installed there).
-# - By default this leaves Postgres to sqlite. To use Postgres, start it first:
-#       docker compose up -d db
-#   and set DATABASE_URL in .env accordingly, then run this script.
+# Press Ctrl+C once to stop everything.
+# Worker and ingest client auto-restart if they crash.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Single Python environment for API, worker, and ingest client (avoid split .venv dirs).
 PYTHON_VENV="$ROOT_DIR/backend/.venv"
 BACKEND_REQ="$ROOT_DIR/backend/requirements.txt"
 INGEST_CLIENT_REQ="$ROOT_DIR/ingest-client/requirements.txt"
 
-# Prefer Python 3.12+ (3.9 is EOL; google-auth and others recommend upgrading)
+SHUTTING_DOWN=0
+SERVICE_PIDS=()
+
 python_cmd() {
   if command -v python3.12 &>/dev/null; then
     python3.12 "$@"
@@ -35,16 +26,14 @@ python_cmd() {
   fi
 }
 
-info() {
-  echo "[dev] $*"
-}
+info()  { echo "[dev] $*"; }
+warn()  { echo "[dev] WARNING: $*" >&2; }
 
 kill_tree() {
   local pid="$1"
   [[ -z "${pid:-}" ]] && return 0
   kill -0 "$pid" 2>/dev/null || return 0
 
-  # Terminate child processes first to avoid orphaned watchers/reload workers.
   if command -v pgrep &>/dev/null; then
     local children
     children=$(pgrep -P "$pid" 2>/dev/null || true)
@@ -60,6 +49,8 @@ kill_tree() {
 }
 
 stop_all() {
+  [[ "$SHUTTING_DOWN" == "1" ]] && return 0
+  SHUTTING_DOWN=1
   info "Stopping..."
   trap - INT TERM EXIT
 
@@ -67,7 +58,6 @@ stop_all() {
     kill_tree "$pid"
   done
 
-  # Give graceful shutdown a moment, then force kill anything left.
   sleep 1
   for pid in "${SERVICE_PIDS[@]:-}"; do
     kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
@@ -76,105 +66,129 @@ stop_all() {
 
 ensure_python_venv() {
   if [[ ! -d "$PYTHON_VENV" ]]; then
-    info "Creating shared Python virtualenv at backend/.venv (using $(python_cmd -c 'import sys; print(sys.version.split()[0])'))..."
+    info "Creating Python venv at backend/.venv ($(python_cmd -c 'import sys; print(sys.version.split()[0])'))..."
     python_cmd -m venv "$PYTHON_VENV"
   fi
-  # Backend + ingest-client deps in one env (ingest-client adds e.g. watchdog).
   "$PYTHON_VENV/bin/pip" install -q -r "$BACKEND_REQ" -r "$INGEST_CLIENT_REQ"
 }
 
-run_backend() {
-  info "Starting backend API..."
-  cd "$ROOT_DIR/backend"
-  # Ensure Gmail daily sync subprocess uses the same shared venv interpreter.
-  GMAIL_SYNC_PYTHON="$PYTHON_VENV/bin/python" \
-    "$PYTHON_VENV/bin/python" -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-}
-
-run_worker() {
-  info "Starting ingest worker..."
-  cd "$ROOT_DIR/backend"
-  "$PYTHON_VENV/bin/python" -m app.worker
-}
-
-run_ingest_client() {
-  info "Starting ingest client watcher..."
-  cd "$ROOT_DIR/ingest-client"
-  "$PYTHON_VENV/bin/python" -m ingest_client.watcher
-}
-
-run_frontend() {
-  info "Starting frontend (Next.js)..."
-  cd "$ROOT_DIR/frontend"
-
-  if [[ ! -d node_modules ]]; then
-    npm install
+# Kill leftover processes from a previous dev.sh that was not stopped cleanly.
+cleanup_stale_processes() {
+  if ! command -v pkill &>/dev/null; then
+    return 0
   fi
+  local py="${PYTHON_VENV}/bin/python"
+  pkill -f "${py} -m app.worker" 2>/dev/null || true
+  pkill -f "${py} -m ingest_client.watcher" 2>/dev/null || true
+  pkill -f "${py} -m uvicorn app.main:app" 2>/dev/null || true
+}
 
-  npm run dev
+free_port() {
+  local port="$1"
+  if ! command -v lsof &>/dev/null; then
+    return 0
+  fi
+  local pids
+  pids=$(lsof -ti:"$port" 2>/dev/null) || true
+  if [[ -n "${pids:-}" ]]; then
+    info "Freeing port $port (PID(s): $pids)"
+    echo "$pids" | xargs kill -9 2>/dev/null || true
+    sleep 1
+  fi
 }
 
 wait_for_api() {
   local url="http://127.0.0.1:8000/health"
-  info "Waiting for backend at $url ..."
-  for i in $(seq 1 30); do
+  info "Waiting for API at $url ..."
+  for _ in $(seq 1 30); do
     if curl -sf --connect-timeout 2 "$url" >/dev/null 2>&1; then
-      info "Backend is up."
+      info "API is up."
       return 0
     fi
     sleep 1
   done
-  info "Warning: backend did not respond in 30s; frontend may show 'Could not reach backend' until it is ready."
-  return 0
+  warn "API did not respond in 30s; frontend may show errors until it is ready."
 }
 
-# Free port 8000 so the new backend can bind (avoids 'old code' 404s when a previous run is still on 8000)
-free_port_8000() {
-  if command -v lsof &>/dev/null; then
-    local pids
-    pids=$(lsof -ti:8000 2>/dev/null) || true
-    if [[ -n "${pids:-}" ]]; then
-      info "Freeing port 8000 (was in use by PID(s): $pids)"
-      echo "$pids" | xargs kill -9 2>/dev/null || true
-      sleep 1
-    fi
-  fi
+# Run a command in a restart loop until SHUTTING_DOWN=1.
+supervise() {
+  local name="$1"
+  shift
+  while [[ "$SHUTTING_DOWN" != "1" ]]; do
+    info "[$name] starting"
+    "$@" || true
+    [[ "$SHUTTING_DOWN" == "1" ]] && break
+    warn "[$name] exited unexpectedly — restarting in 2s"
+    sleep 2
+  done
+}
+
+start_backend() {
+  supervise api bash -c "
+    cd '$ROOT_DIR/backend' &&
+    export GMAIL_SYNC_PYTHON='$PYTHON_VENV/bin/python' &&
+    exec '$PYTHON_VENV/bin/python' -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+  "
+}
+
+start_worker() {
+  supervise worker bash -c "
+    cd '$ROOT_DIR/backend' &&
+    exec '$PYTHON_VENV/bin/python' -m app.worker
+  "
+}
+
+start_ingest_client() {
+  supervise ingest bash -c "
+    cd '$ROOT_DIR/ingest-client' &&
+    exec '$PYTHON_VENV/bin/python' -m ingest_client.watcher
+  "
+}
+
+start_frontend() {
+  supervise frontend bash -c "
+    cd '$ROOT_DIR/frontend' &&
+    [[ -d node_modules ]] || npm install &&
+    exec npm run dev
+  "
+}
+
+launch() {
+  local name="$1"
+  local pid
+  shift
+  "$@" &
+  pid=$!
+  SERVICE_PIDS+=("$pid")
+  info "[$name] supervisor PID $pid"
 }
 
 main() {
-  SERVICE_PIDS=()
-  info "Root directory: $ROOT_DIR"
-  info "Make sure .env is configured (see .env.example)."
-
-  free_port_8000
-  ensure_python_venv
-  info "Launching services (API, worker, ingest client, frontend)..."
+  info "Investing Agent — starting all services"
+  info "Root: $ROOT_DIR"
   trap 'stop_all; exit 0' INT TERM EXIT
 
-  # Start backend first, then wait for it so the frontend's first SSR request can reach it
-  (run_backend) &
-  API_PID=$!
-  SERVICE_PIDS+=("$API_PID")
+  cleanup_stale_processes
+  free_port 8000
+  free_port 3000
+  ensure_python_venv
+
+  launch api start_backend
   wait_for_api
 
-  (run_worker) &
-  WORKER_PID=$!
-  SERVICE_PIDS+=("$WORKER_PID")
+  launch worker start_worker
+  launch ingest start_ingest_client
+  launch frontend start_frontend
 
-  (run_ingest_client) &
-  INGEST_PID=$!
-  SERVICE_PIDS+=("$INGEST_PID")
+  info ""
+  info "Ready:"
+  info "  Dashboard   http://localhost:3000"
+  info "  API         http://127.0.0.1:8000"
+  info "  Drop PDFs   watch_pdfs/  (or your WATCH_DIR)"
+  info ""
+  info "Worker + ingest client auto-restart on crash. Press Ctrl+C to stop all."
 
-  (run_frontend) &
-  FRONTEND_PID=$!
-  SERVICE_PIDS+=("$FRONTEND_PID")
-
-  info "PIDs: api=$API_PID worker=$WORKER_PID ingest=$INGEST_PID frontend=$FRONTEND_PID"
-  info "Press Ctrl+C to stop everything."
-
-  # Wait on any process to exit; Ctrl+C also handled by trap.
   wait
 }
 
 main "$@"
-

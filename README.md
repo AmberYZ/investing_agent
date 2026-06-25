@@ -28,63 +28,46 @@ cp .env.example .env
 cp frontend/.env.local.example frontend/.env.local
 ```
 
-2. Run backend API (defaults: sqlite + local storage; Vertex disabled)
+2. **Start everything** (one command)
 
 ```bash
-cd backend
-python3.12 -m venv .venv   # or python3 if that’s already 3.10+
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python -m uvicorn app.main:app --reload --port 8000
-```
-(Using `.venv/bin/python` avoids "no module named 'fastapi'" if the venv isn’t activated.)
-
-For **local dev you do not need** the Google Cloud stack (no `grpcio` build). If you later enable GCS or Vertex AI, run `pip install -r requirements-gcp.txt` in the same venv.
-
-3. Run worker (separate terminal)
-
-```bash
-cd backend
-.venv/bin/python -m app.worker
+./dev.sh
+# or: ./start.sh
 ```
 
-4. Run local ingest client (separate terminal)
+This starts the API, ingest worker, PDF watcher, and dashboard together. The worker and watcher **auto-restart** if they crash. Press **Ctrl+C** once to stop all services.
 
-```bash
-cd ingest-client
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python -m ingest_client.watcher
-```
+- Dashboard: http://localhost:3000
+- API: http://127.0.0.1:8000
+- Drop PDFs into **`watch_pdfs/`** at the repo root (or set `WATCH_DIR` in `.env`)
 
-5. Run the dashboard (separate terminal)
+The script creates `backend/.venv`, installs Python deps, and frees ports 8000/3000 if they are still in use from a previous run.
 
-```bash
-cd frontend
-npm install && npm run dev
-```
+### Running services separately (optional)
 
-Open http://localhost:3000.
-
-**To see themes on the dashboard:** the ingest client is already running (no separate terminal needed). Drop PDF files into the **`watch_pdfs/`** folder at the repo root; it is created automatically if you don’t set `WATCH_DIR` in `.env`. The watcher will upload them and the worker will extract themes (using heuristics by default; set `ENABLE_VERTEX=true` for Gemini extraction). You can instead set `WATCH_DIR` in `.env` to any folder that already contains PDFs.
-
-### One command: `./dev.sh`
-
-From the repo root, run `./dev.sh` to start backend, worker, ingest client, and frontend together. The script **frees port 8000** before starting so the backend always runs the latest code (avoids "Backend may be running old code" from the ingest client). Press Ctrl+C to stop everything.
-
-### Running backend and frontend separately (recommended for development)
-
-Running each service in its own terminal makes it easy to **restart only the backend** after code changes and keeps logs separate.
+Use separate terminals only if you want isolated logs or to restart one service without touching the others:
 
 | Terminal | Command | Purpose |
 |----------|---------|---------|
-| **1** | `cd backend && .venv/bin/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000` | API (restart this when you change backend code) |
+| **1** | `cd backend && .venv/bin/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000` | API |
 | **2** | `cd backend && .venv/bin/python -m app.worker` | Ingest worker |
-| **3** | `cd ingest-client && .venv/bin/python -m ingest_client.watcher` | PDF watcher (uses watch dirs from API or config file) |
-| **4** | `cd frontend && npm run dev` | Dashboard at http://localhost:3000 |
+| **3** | `cd ingest-client && ../backend/.venv/bin/python -m ingest_client.watcher` | PDF watcher |
+| **4** | `cd frontend && npm run dev` | Dashboard |
 
-If something was already using port 8000, free it first: `lsof -ti:8000 | xargs kill -9` (macOS/Linux), then start the backend in terminal 1.
+If port 8000 is in use: `lsof -ti:8000 | xargs kill -9` (macOS/Linux).
 
-**Stopping the ingest client:** The watcher runs until you stop it. If you used `./dev.sh`, press **Ctrl+C** in that terminal once to stop all services (backend, worker, ingest client, frontend). If you started the ingest client in its own terminal (e.g. terminal 3 above), go to that terminal and press **Ctrl+C** to stop only the watcher. To find and kill the watcher process: `pkill -f ingest_client.watcher`.
+### Manual setup (without dev.sh)
+
+```bash
+cd backend
+python3.12 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m uvicorn app.main:app --reload --port 8000
+```
+
+In other terminals: `.venv/bin/python -m app.worker`, ingest watcher, and `cd frontend && npm run dev`.
+
+For **local dev you do not need** the Google Cloud stack (no `grpcio` build). If you later enable GCS or Vertex AI, run `pip install -r requirements-gcp.txt` in the same venv.
 
 ## GCP / Vertex AI setup notes
 
