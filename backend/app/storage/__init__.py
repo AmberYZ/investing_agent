@@ -4,8 +4,18 @@ from __future__ import annotations
 from app.storage.base import StorageBackend, StoredObject
 from app.storage.gcs import GcsStorage
 from app.storage.local import LocalStorage
+from app.storage.paths import existing_local_file, file_uri
 
-__all__ = ["StorageBackend", "StoredObject", "LocalStorage", "GcsStorage", "get_storage"]
+__all__ = [
+    "StorageBackend",
+    "StoredObject",
+    "LocalStorage",
+    "GcsStorage",
+    "get_storage",
+    "existing_local_file",
+    "file_uri",
+    "resolve_raw_uri",
+]
 
 
 def get_storage() -> StorageBackend:
@@ -18,3 +28,11 @@ def get_storage() -> StorageBackend:
             raise ValueError("GCS_BUCKET is required when STORAGE_BACKEND=gcs")
         return GcsStorage(bucket=settings.gcs_bucket, prefix=settings.gcs_prefix)
     raise ValueError(f"Unknown STORAGE_BACKEND={settings.storage_backend}")
+
+
+def resolve_raw_uri(*, source_uri: str | None, gcs_raw_uri: str | None) -> str | None:
+    """Prefer an existing local source file over a copied storage URI."""
+    local = existing_local_file(source_uri)
+    if local is not None:
+        return file_uri(local)
+    return gcs_raw_uri

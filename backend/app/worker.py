@@ -35,7 +35,7 @@ from app.models import (
     ThemeMergeReinforcement,
 )
 from app.processing_exclude import processing_exclude_match_reason, processing_force_process
-from app.storage import get_storage
+from app.storage import existing_local_file, get_storage, resolve_raw_uri
 from app.settings import settings
 
 
@@ -431,7 +431,14 @@ def process_job(db: Session, job: IngestJob) -> None:
 
 
 def _process_job_inner(db: Session, job: IngestJob, doc: Document, storage) -> None:
-    raw_bytes = storage.download_bytes(uri=doc.gcs_raw_uri)
+    raw_uri = resolve_raw_uri(source_uri=doc.source_uri, gcs_raw_uri=doc.gcs_raw_uri)
+    if not raw_uri:
+        raise FileNotFoundError(f"No raw URI for document {doc.id}")
+    # If the watch-dir original still exists, point the DB at it (no .local_storage copy).
+    if raw_uri != doc.gcs_raw_uri and existing_local_file(doc.source_uri) is not None:
+        doc.gcs_raw_uri = raw_uri
+        db.commit()
+    raw_bytes = storage.download_bytes(uri=raw_uri)
     content_type = getattr(doc, "content_type", "application/pdf") or "application/pdf"
 
     if content_type in ("text/html", "text/plain"):

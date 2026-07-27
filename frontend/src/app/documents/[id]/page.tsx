@@ -102,7 +102,11 @@ export default async function DocumentPage(
           </div>
           {doc.download_url && (
             <a
-              href={doc.download_url}
+              href={
+                doc.download_url.startsWith("http") || doc.download_url.startsWith("gs://")
+                  ? doc.download_url
+                  : `${API_BASE}${doc.download_url}`
+              }
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center rounded-full bg-zinc-900 px-4 py-2 text-xs font-medium text-zinc-50 shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"

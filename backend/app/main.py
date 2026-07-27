@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import distinct, func, update
 from sqlalchemy.exc import IntegrityError
@@ -156,7 +156,7 @@ from app.settings import settings
 from app.theme_merge import MergeOptions, compute_merge_candidates, execute_theme_merge
 from app.theme_clusters import compute_megathemes
 from app.worker import canonicalize_label, ensure_alias
-from app.storage import GcsStorage, get_storage
+from app.storage import GcsStorage, existing_local_file, file_uri, get_storage, resolve_raw_uri
 from app.followed_themes import get_followed_theme_ids, follow_theme, unfollow_theme, is_followed
 from app.theme_cleanup import delete_theme_cascade, remove_empty_unfollowed_themes
 
@@ -637,21 +637,27 @@ def ingest_file(
     data = file.file.read()
     digest = hashlib.sha256(data).hexdigest()
 
-    storage = get_storage()
-    try:
-        stored = storage.upload_bytes(
-            key=f"raw/{digest}_{file.filename or 'document.pdf'}",
-            data=data,
-            content_type=file.content_type or "application/pdf",
-        )
-    except Exception as e:
-        msg = str(e)
-        if "403" in msg or "Forbidden" in msg or "Permission" in msg or "AccessDenied" in msg:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Storage upload failed (check GCS bucket permissions for your service account): {msg}",
+    # Local watch-dir files: point at the original path; do not copy into .local_storage.
+    local_src = existing_local_file(source_uri)
+    if settings.storage_backend == "local" and local_src is not None:
+        raw_uri = file_uri(local_src)
+    else:
+        storage = get_storage()
+        try:
+            stored = storage.upload_bytes(
+                key=f"raw/{digest}_{file.filename or 'document.pdf'}",
+                data=data,
+                content_type=file.content_type or "application/pdf",
             )
-        raise HTTPException(status_code=502, detail=f"Storage upload failed: {msg}")
+        except Exception as e:
+            msg = str(e)
+            if "403" in msg or "Forbidden" in msg or "Permission" in msg or "AccessDenied" in msg:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Storage upload failed (check GCS bucket permissions for your service account): {msg}",
+                )
+            raise HTTPException(status_code=502, detail=f"Storage upload failed: {msg}")
+        raw_uri = stored.uri
 
     parsed_modified: Optional[dt.datetime] = None
     if modified_at:
@@ -663,7 +669,7 @@ def ingest_file(
     req = IngestRequest(
         sha256=digest,
         filename=file.filename or "document.pdf",
-        gcs_raw_uri=stored.uri,
+        gcs_raw_uri=raw_uri,
         received_at=dt.datetime.now(dt.timezone.utc),
         modified_at=parsed_modified,
         source_type=source_type,
@@ -1916,15 +1922,18 @@ def get_document(document_id: int, db: Session = Depends(get_db)):
     text_download_url: Optional[str] = None
 
     storage = get_storage()
-    # Only GCS backend supports signed URLs; otherwise return the raw URI for local dev.
-    if isinstance(storage, GcsStorage):
-        if doc.gcs_raw_uri:
-            download_url = storage.generate_signed_url(uri=doc.gcs_raw_uri)
-        if doc.gcs_text_uri:
+    # Prefer serving via API so browsers can open local watch-dir files (file:// is blocked).
+    raw_uri = resolve_raw_uri(source_uri=doc.source_uri, gcs_raw_uri=doc.gcs_raw_uri)
+    if raw_uri:
+        if isinstance(storage, GcsStorage) and raw_uri.startswith("gs://"):
+            download_url = storage.generate_signed_url(uri=raw_uri)
+        else:
+            download_url = f"/documents/{document_id}/file"
+    if doc.gcs_text_uri:
+        if isinstance(storage, GcsStorage) and doc.gcs_text_uri.startswith("gs://"):
             text_download_url = storage.generate_signed_url(uri=doc.gcs_text_uri)
-    else:
-        download_url = doc.gcs_raw_uri
-        text_download_url = doc.gcs_text_uri
+        else:
+            text_download_url = f"/documents/{document_id}/text"
 
     return DocumentOut(
         id=doc.id,
@@ -1940,6 +1949,46 @@ def get_document(document_id: int, db: Session = Depends(get_db)):
         gcs_text_uri=doc.gcs_text_uri,
         download_url=download_url,
         text_download_url=text_download_url,
+    )
+
+
+@app.get("/documents/{document_id}/file")
+def get_document_file(document_id: int, db: Session = Depends(get_db)):
+    """Stream the original file. Prefers local source_uri when present; no .local_storage copy required."""
+    doc = db.query(Document).filter(Document.id == document_id).one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    local = existing_local_file(doc.source_uri)
+    if local is not None:
+        return FileResponse(
+            path=str(local),
+            filename=doc.filename or local.name,
+            media_type=doc.content_type or "application/pdf",
+        )
+
+    uri = doc.gcs_raw_uri
+    if not uri:
+        raise HTTPException(status_code=404, detail="Document file not available")
+
+    local_from_uri = existing_local_file(uri)
+    if local_from_uri is not None:
+        return FileResponse(
+            path=str(local_from_uri),
+            filename=doc.filename or local_from_uri.name,
+            media_type=doc.content_type or "application/pdf",
+        )
+
+    storage = get_storage()
+    try:
+        data = storage.download_bytes(uri=uri)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail=f"Document file missing: {e}") from e
+
+    return Response(
+        content=data,
+        media_type=doc.content_type or "application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{doc.filename or "document"}"'},
     )
 
 
