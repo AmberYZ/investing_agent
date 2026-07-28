@@ -21,6 +21,14 @@ type ThemeDetail = {
   child_theme_ids?: number[];
 };
 
+type ThemeDailyMetric = {
+  theme_id: number;
+  date: string;
+  doc_count: number;
+  mention_count: number;
+  share_of_voice: number | null;
+};
+
 type NarrativeSummaryExtended = {
   summary: string;
   investment_relevance?: string | null;
@@ -52,12 +60,54 @@ async function getTheme(id: string): Promise<ThemeDetail | null> {
   return res.json();
 }
 
+async function getThemeMetrics(id: string, months: number, chartStartIso: string | null): Promise<ThemeDailyMetric[]> {
+  const q = chartStartIso ? `start=${encodeURIComponent(chartStartIso)}` : `months=${months}`;
+  const res = await fetch(`${API_BASE}/themes/${id}/metrics?${q}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  return res.json();
+}
+
 async function getNarrativeSummary(id: string, period: "all" | "30d" = "30d"): Promise<NarrativeSummaryExtended | null> {
   const res = await fetch(`${API_BASE}/themes/${id}/narrative-summary?period=${period}`, {
     cache: "no-store",
   });
   if (!res.ok) return null;
   return res.json();
+}
+
+function Sparkline({ data }: { data: number[] }) {
+  if (data.length === 0) return null;
+  const max = Math.max(...data);
+  const min = Math.min(...data);
+  const norm = max === min ? data.map(() => 0.5) : data.map((v) => (v - min) / (max - min));
+  const width = 120;
+  const height = 32;
+  const step = data.length === 1 ? width : width / (data.length - 1);
+  const points = norm
+    .map((v, i) => {
+      const x = i * step;
+      const y = height - v * (height - 4) - 2;
+      return `${x},${y}`;
+    })
+    .join(" ");
+  return (
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      className="h-8 w-32 text-emerald-500 dark:text-emerald-400"
+      aria-hidden="true"
+    >
+      <polyline
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        points={points}
+      />
+    </svg>
+  );
 }
 
 export default async function ThemePage(
@@ -71,9 +121,10 @@ export default async function ThemePage(
   const months = monthsParam === "12" ? 12 : 6;
   const chartStartIso = parseChartStart(startParam);
 
-  const [theme, narrativeSummary] = await Promise.all([
+  const [theme, narrativeSummary, metrics] = await Promise.all([
     getTheme(id),
     getNarrativeSummary(id, "30d"),
+    getThemeMetrics(id, months, chartStartIso),
   ]);
 
   if (!theme) {
@@ -88,6 +139,12 @@ export default async function ThemePage(
       </div>
     );
   }
+
+  const sovSeries = (metrics ?? []).map((m) => {
+    const sov = m.share_of_voice;
+    if (sov == null) return 0;
+    return sov <= 1 ? sov * 100 : sov;
+  });
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-black dark:text-zinc-50">
@@ -125,6 +182,17 @@ export default async function ThemePage(
               />
             </div>
             <ThemePageRangeControls themeId={id} months={months} chartStartIso={chartStartIso} />
+            {(metrics ?? []).length > 0 && (
+              <div className="font-mono">
+                {metrics[0].date} → {metrics[metrics.length - 1].date}
+              </div>
+            )}
+            {sovSeries.length > 0 && (
+              <div className="flex items-center gap-2">
+                <Sparkline data={sovSeries} />
+                <span className="text-[11px]">share of voice</span>
+              </div>
+            )}
           </div>
         </div>
 

@@ -38,6 +38,18 @@ const INFLECTION_CATEGORY_LABELS: Record<InflectionCategory, string> = {
   most_crowded: "Most crowded",
 };
 
+type ThemeMetric = {
+  theme_id: number;
+  date: string;
+  doc_count: number;
+  mention_count: number;
+  share_of_voice: number | null;
+  consensus_count: number;
+  contrarian_count: number;
+  refinement_count: number;
+  new_angle_count: number;
+};
+
 
 type Theme = {
   id: number;
@@ -170,6 +182,9 @@ export function ThemesPageClient({
   const [contrarianThemes, setContrarianThemes] = useState<
     { id: number; canonical_label: string }[]
   >([]);
+  const [metricsMap, setMetricsMap] = useState<Record<number, ThemeMetric[]>>(
+    {}
+  );
   const [error, setError] = useState<string | null>(null);
   const [readData, setReadData] = useState<Record<number, string>>({});
   const [allDismissedAt, setAllDismissedAt] = useState<string | null>(null);
@@ -221,6 +236,7 @@ export function ThemesPageClient({
     setThemes(null);
     setContrarianThemes([]);
     setInflectionSections(null);
+    setMetricsMap({});
     try {
       if (view === "all") {
         const [themeList, contrarian] = await Promise.all([
@@ -315,6 +331,35 @@ export function ThemesPageClient({
   useEffect(() => {
     loadThemes();
   }, [loadThemes]);
+
+  useEffect(() => {
+    if (!themes || themes.length === 0) return;
+
+    let cancelled = false;
+    const run = async () => {
+      const results = await Promise.allSettled(
+        themes.map((t) =>
+          fetchJson<ThemeMetric[]>(
+            `${API_BASE}/themes/${t.id}/metrics?months=${months}`
+          ).then((metrics) => ({ themeId: t.id, metrics }))
+        )
+      );
+      if (cancelled) return;
+      setMetricsMap((prev) => {
+        const next = { ...prev };
+        results.forEach((r) => {
+          if (r.status === "fulfilled") {
+            next[r.value.themeId] = r.value.metrics;
+          }
+        });
+        return next;
+      });
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [themes, months]);
 
   const viewQuery = view !== "all" ? `&view=${view}` : "";
 
@@ -527,6 +572,7 @@ export function ThemesPageClient({
             </div>
             <ThemeCardGrid
               list={inflectionSections[inflectionCategory]}
+              metricsMap={metricsMap}
               readData={readData}
               allDismissedAt={allDismissedAt}
               followedIds={followedIds}
@@ -536,6 +582,7 @@ export function ThemesPageClient({
         ) : (
           <ThemeCardGrid
             list={themes}
+            metricsMap={metricsMap}
             readData={readData}
             allDismissedAt={allDismissedAt}
             followedIds={followedIds}
