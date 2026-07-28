@@ -20,6 +20,7 @@ type InsightItem = {
   hypothesis: string;
   reasoning: string;
   evidence: InsightEvidence[];
+  tickers?: string[];
 };
 
 type UniverseInsights = {
@@ -37,6 +38,7 @@ const KIND_STYLES: Record<string, string> = {
   sector: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
   theme: "bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300",
   company: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
+  etf: "bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300",
 };
 
 function formatGeneratedAt(iso: string | null | undefined): string | null {
@@ -108,6 +110,7 @@ function EvidenceLinks({ evidence }: { evidence: InsightEvidence[] }) {
 }
 
 function InsightCard({ item, index }: { item: InsightItem; index: number }) {
+  const tickers = (item.tickers ?? []).filter(Boolean);
   return (
     <article className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -119,6 +122,18 @@ function InsightCard({ item, index }: { item: InsightItem; index: number }) {
         </div>
         <KindBadge kind={item.kind} />
       </div>
+      {tickers.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {tickers.map((sym) => (
+            <span
+              key={sym}
+              className="rounded-md border border-zinc-300 bg-zinc-100 px-2 py-0.5 font-mono text-[11px] font-semibold tracking-wide text-zinc-800 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
+            >
+              {sym}
+            </span>
+          ))}
+        </div>
+      )}
       <p className="mt-3 text-sm font-medium text-zinc-800 dark:text-zinc-200">{item.hypothesis}</p>
       <div className="mt-2">
         <h4 className="text-[11px] font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
@@ -219,8 +234,9 @@ export default function InsightsPage() {
           <div>
             <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">Market Insights</h1>
             <p className="mt-1 max-w-2xl text-sm text-zinc-500 dark:text-zinc-400">
-              Deductions from your full recent research universe — themes, narratives, and document
-              summaries. Not summaries: each item shows the logic and links to source documents.
+              Independent deductions — not article picks. Opportunities &amp; risks are
+              stress-tested with market valuation; Forward look is speculative logic
+              detached from research files.
             </p>
             {generatedLabel && (
               <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
@@ -280,19 +296,19 @@ export default function InsightsPage() {
           <div className="mt-8 space-y-10">
             <InsightSection
               title="Consensus opportunities & risks"
-              subtitle="Views where multiple sources and themes align — what the crowd already agrees on."
+              subtitle="Where research aligns — after independent judgment including valuation (not because a file labeled it an opportunity)."
               items={data.consensus}
               emptyMessage="No consensus items in the latest run."
             />
             <InsightSection
               title="Non-consensus & under-noticed"
-              subtitle="Emerging angles, contrarian views, or debated themes not yet widely priced in."
+              subtitle="Angles the crowd underweights; reasoned, not just contrarian for its own sake."
               items={data.non_consensus}
               emptyMessage="No non-consensus items in the latest run."
             />
             <InsightSection
               title="Forward look"
-              subtitle="Logical deductions on what sectors, themes, or companies could rise from today's setup."
+              subtitle="Multi-step bets ahead of the crowd — each idea lands on concrete tickers or ETFs. Count is whatever the logic supports."
               items={data.forward_look}
               emptyMessage="No forward deductions in the latest run."
             />

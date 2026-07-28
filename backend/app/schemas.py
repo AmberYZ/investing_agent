@@ -333,8 +333,11 @@ class NarrativeSummaryOut(BaseModel):
 
 
 class NarrativeSummaryExtendedOut(BaseModel):
-    """Past-month summary with trending sub-themes and inflection alert (heuristics + optional LLM)."""
+    """Past-month summary with investing relevance, change signal, and optional LLM extras."""
     summary: str
+    investment_relevance: Optional[str] = None
+    what_changed: Optional[str] = None
+    change_narrative_ids: list[int] = Field(default_factory=list)
     trending_sub_themes: list[str] = Field(default_factory=list)
     inflection_alert: Optional[str] = None
 
@@ -342,6 +345,9 @@ class NarrativeSummaryExtendedOut(BaseModel):
 class BatchNarrativeSummaryItemOut(BaseModel):
     """One theme's narrative summary for batch endpoint."""
     summary: str
+    investment_relevance: Optional[str] = None
+    what_changed: Optional[str] = None
+    change_narrative_ids: list[int] = Field(default_factory=list)
     trending_sub_themes: list[str] = Field(default_factory=list)
     inflection_alert: Optional[str] = None
 
@@ -695,10 +701,12 @@ class InsightEvidenceOut(BaseModel):
 class UniverseInsightItemOut(BaseModel):
     """Single opportunity/risk or forward-looking deduction."""
     title: str
-    kind: str  # opportunity | risk | sector | theme | company
+    kind: str  # opportunity | risk | sector | theme | company | etf
     hypothesis: str
     reasoning: str
     evidence: list[InsightEvidenceOut] = Field(default_factory=list)
+    # Investable instruments the thesis lands on (tickers / ETF symbols).
+    tickers: list[str] = Field(default_factory=list)
 
 
 class UniverseInsightsOut(BaseModel):

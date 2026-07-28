@@ -497,36 +497,82 @@ def generate_theme_narrative_summaries(db: Session, theme_id: Optional[int] = No
         if not recent_narratives:
             continue
 
-        # Build a compact input for the LLM
-        narrative_lines = []
-        for n in recent_narratives:  # cap at 30 narratives
+        # Build a compact input for the LLM — recent vs older for change detection
+        recent_sorted = sorted(
+            recent_narratives,
+            key=lambda n: (n.last_seen or n.first_seen or dt.datetime.min.replace(tzinfo=dt.timezone.utc), n.id),
+        )
+        recent_lines = []
+        for n in recent_sorted[:40]:
             stance = n.narrative_stance or "unknown"
             conf = n.confidence_level or "unknown"
             sub = n.sub_theme or "general"
-            narrative_lines.append(
-                f"- [{stance}, {conf}, sub-theme: {sub}] {n.statement}"
+            seen = (n.last_seen or n.first_seen)
+            seen_s = seen.date().isoformat() if seen else "?"
+            recent_lines.append(
+                f"- id={n.id} [{seen_s}, {stance}, {conf}, sub-theme: {sub}] {n.statement}"
             )
+
+        older_since = since - dt.timedelta(days=60)
+        older_narratives = (
+            db.query(Narrative)
+            .join(Evidence, Evidence.narrative_id == Narrative.id)
+            .join(Document, Document.id == Evidence.document_id)
+            .filter(
+                Narrative.theme_id == theme.id,
+                doc_date >= older_since,
+                doc_date < since,
+            )
+            .distinct()
+            .limit(25)
+            .all()
+        )
+        older_lines = []
+        for n in older_narratives:
+            stance = n.narrative_stance or "unknown"
+            sub = n.sub_theme or "general"
+            older_lines.append(f"- id={n.id} [{stance}, sub-theme: {sub}] {n.statement}")
+
+        prior_block = (
+            ("\nPrior narratives (31–90 days ago, for comparison):\n" + "\n".join(older_lines) + "\n")
+            if older_lines
+            else "\n(No prior-period narratives available for comparison.)\n"
+        )
 
         user_prompt = (
             f"Theme: {theme.canonical_label}\n"
-            f"Description: {theme.description or 'N/A'}\n\n"
-            f"Narratives from the past 30 days:\n"
-            + "\n".join(narrative_lines)
-            + "\n\n"
-            "Write a SHORT, punchy analyst briefing (max 8-10 bullet points total, not paragraphs). "
-            "Use **bold** on key figures, company names, and important shifts so a reader can scan quickly.\n\n"
-            "Structure:\n"
-            "**Consensus view**: 2-3 bullets on the prevailing facts and opinions.\n"
-            "**What changed this month**: 2-3 bullets on new developments or tone shifts.\n"
-            "**Key debates**: 1-2 bullets on bull vs bear disagreements.\n"
-            "**Watch list**: 1-2 bullets on upcoming catalysts or risks.\n\n"
-            "Be specific — cite actual claims. Keep each bullet to 1-2 sentences max. Professional analyst tone.\n"
-            "Return ONLY a JSON object: {\"summary\": \"...\", \"trending_sub_themes\": [\"...\"], \"inflection_alert\": \"...\" or null}\n"
+            f"Description: {theme.description or 'N/A'}\n"
+            f"As of: {dt.date.today().isoformat()}\n\n"
+            f"Recent narratives (past 30 days, chronological):\n"
+            + "\n".join(recent_lines)
+            + "\n"
+            + prior_block
+            + "\n"
+            "Write a DAILY ANALYST MEMO for the investment committee / decision maker — "
+            "as if you are on the research team and this is today's note on the theme.\n\n"
+            "Voice & craft:\n"
+            "- Reasoned synthesis, not an inventory. Do NOT tally or enumerate bullish/bearish/mixed/neutral counts.\n"
+            "- Do NOT paste or restate every narrative. Distill the story: what matters, why it matters, what to do.\n"
+            "- Clear, direct prose a PM can skim in 30 seconds. Use **bold** sparingly on key figures/names.\n"
+            "- First-person team analyst tone is fine (\"We see…\", \"Our take…\", \"Worth watching…\").\n\n"
+            "Return ONLY a JSON object:\n"
+            "{\n"
+            '  "summary": "The memo body: 2-4 short paragraphs (or tight bullets that still read as one memo). '
+            'Cover situation -> investment implication -> what to watch. No stance tallies.",\n'
+            '  "investment_relevance": "Bottom line for the book: 2-3 sentences on positioning, sizing, '
+            'timing, or pass — concrete and actionable.",\n'
+            '  "what_changed": "Vs the prior period: 2-3 sentences on what actually moved (new facts, '
+            'tone shift, thesis confirmed/broken). If nothing material changed, say so.",\n'
+            '  "change_narrative_ids": [/* ids from the RECENT list that drive the change signal; '
+            'empty if no material change */],\n'
+            '  "trending_sub_themes": ["optional short labels"],\n'
+            '  "inflection_alert": "one-line alert if regime shift, else null"\n'
+            "}\n"
         )
-        
+
         system = (
-            "You are a senior investment analyst summarizing the latest narrative landscape for an investment theme. "
-            "Be concise, insightful, and actionable. Return valid JSON only."
+            "You are a senior investment analyst writing a daily memo to management. "
+            "Synthesize and reason — never enumerate stance counts. Return valid JSON only."
         )
 
         try:
@@ -560,6 +606,21 @@ def generate_theme_narrative_summaries(db: Session, theme_id: Optional[int] = No
             else:
                 summary_text = str(summary_val).strip()
 
+            investment_relevance = str(data.get("investment_relevance") or "").strip() or None
+            what_changed = str(data.get("what_changed") or "").strip() or None
+
+            valid_recent_ids = {int(n.id) for n in recent_narratives}
+            change_ids_raw = data.get("change_narrative_ids") or []
+            change_narrative_ids: list[int] = []
+            if isinstance(change_ids_raw, list):
+                for x in change_ids_raw:
+                    try:
+                        xid = int(x)
+                    except (TypeError, ValueError):
+                        continue
+                    if xid in valid_recent_ids and xid not in change_narrative_ids:
+                        change_narrative_ids.append(xid)
+
             trending = data.get("trending_sub_themes", [])
             # Normalise trending_sub_themes to a simple list of strings.
             if isinstance(trending, dict):
@@ -574,8 +635,19 @@ def generate_theme_narrative_summaries(db: Session, theme_id: Optional[int] = No
                 # Store a concise string representation if the model returns a structured alert.
                 inflection = str(inflection)
 
-            if not summary_text:
+            if not summary_text and not investment_relevance and not what_changed:
                 continue
+
+            # Encode structured extras in trending_sub_themes JSON (no schema migration).
+            meta_payload = {
+                "trending": trending,
+                "change_narrative_ids": change_narrative_ids,
+                "investment_relevance": investment_relevance,
+                "what_changed": what_changed,
+            }
+            # Keep a readable summary even if detail bullets are empty.
+            if not summary_text:
+                summary_text = what_changed or investment_relevance or ""
         except Exception as e:
             logger.warning("Failed to generate summary for theme %s: %s", theme.id, e)
             continue
@@ -591,7 +663,7 @@ def generate_theme_narrative_summaries(db: Session, theme_id: Optional[int] = No
         
         if existing:
             existing.summary = summary_text
-            existing.trending_sub_themes = json.dumps(trending) if trending else None
+            existing.trending_sub_themes = json.dumps(meta_payload)
             existing.inflection_alert = inflection
             existing.generated_at = now
         else:
@@ -599,7 +671,7 @@ def generate_theme_narrative_summaries(db: Session, theme_id: Optional[int] = No
                 theme_id=theme.id,
                 period="30d",
                 summary=summary_text,
-                trending_sub_themes=json.dumps(trending) if trending else None,
+                trending_sub_themes=json.dumps(meta_payload),
                 inflection_alert=inflection,
                 generated_at=now,
             ))

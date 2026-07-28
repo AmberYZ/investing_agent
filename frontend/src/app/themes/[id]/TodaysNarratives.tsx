@@ -46,11 +46,14 @@ export function TodaysNarratives({
   narratives,
   themeId,
   themeLabel,
+  changeNarrativeIds = [],
 }: {
   narratives: Narrative[];
   themeId: string;
   /** Current page theme label; used to show child-theme tag when narrative is from a sub-theme. */
   themeLabel?: string;
+  /** Narrative IDs that drive the “what changed” signal — highlighted in the list. */
+  changeNarrativeIds?: number[];
 }) {
   if (narratives.length === 0) {
     return (
@@ -60,10 +63,18 @@ export function TodaysNarratives({
     );
   }
 
+  const changeSet = new Set(changeNarrativeIds);
+
   return (
     <div className="space-y-3">
       {narratives.map((n) => (
-        <NarrativeCard key={n.id} narrative={n} themeId={themeId} themeLabel={themeLabel} />
+        <NarrativeCard
+          key={n.id}
+          narrative={n}
+          themeId={themeId}
+          themeLabel={themeLabel}
+          isChange={changeSet.has(n.id)}
+        />
       ))}
     </div>
   );
@@ -73,10 +84,12 @@ function NarrativeCard({
   narrative: n,
   themeId,
   themeLabel,
+  isChange = false,
 }: {
   narrative: Narrative;
   themeId: string;
   themeLabel?: string;
+  isChange?: boolean;
 }) {
   const router = useRouter();
   const [showAllQuotes, setShowAllQuotes] = useState(false);
@@ -138,10 +151,21 @@ function NarrativeCard({
   }, [n.id, targetThemeId, themeId, router]);
 
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-950">
+    <div
+      className={`rounded-lg border bg-white p-3 dark:bg-zinc-950 ${
+        isChange
+          ? "border-amber-400 ring-1 ring-amber-300/60 dark:border-amber-500 dark:ring-amber-500/40"
+          : "border-zinc-200 dark:border-zinc-800"
+      }`}
+    >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
+            {isChange && (
+              <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900 dark:bg-amber-900/50 dark:text-amber-200">
+                Change
+              </span>
+            )}
             <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{n.statement}</div>
             {childThemeTagLabel && (
               <Link

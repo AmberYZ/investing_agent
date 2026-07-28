@@ -77,6 +77,8 @@ _DEFAULT_SYSTEM = (
     "CRITICAL: Theme labels must be ONLY the core entity or topic name (e.g. 'BYD', 'Miniso', 'Gold', 'HBM / AI memory'). "
     "NEVER append qualifiers, strategies, or dimensions to the theme label—those go in sub_theme. "
     "Bad: 'BYD International sales'. Good: theme 'BYD', sub_theme 'International sales'.\n"
+    "Prefer fewer high-signal narratives (typically 2–6 per document). Merge related claims; do not fragment. "
+    "Write each narrative statement in plain, direct language (1–2 sentences).\n"
     "Sub-themes can be either reusable analytical lenses (e.g. 'Demand outlook', 'Valuation', 'Margins') "
     "OR named catalysts/entities (e.g. 'GENIUS Act', 'CHIPS Act', 'GPT-5') when the specific entity is central to the narrative. "
     "Prefer specificity—'GENIUS Act' is better than 'Regulation' if the narrative is specifically about that act.\n"

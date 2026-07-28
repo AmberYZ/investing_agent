@@ -44,18 +44,6 @@ type Theme = {
   is_new: boolean;
 };
 
-type ThemeMetric = {
-  theme_id: number;
-  date: string;
-  doc_count: number;
-  mention_count: number;
-  share_of_voice: number | null;
-  consensus_count: number;
-  contrarian_count: number;
-  refinement_count: number;
-  new_angle_count: number;
-};
-
 function parseDateRange(start: string, end: string): { startDate: Date; endDate: Date; days: number } {
   const startDate = new Date(start + "Z");
   const endDate = new Date(end + "Z");
@@ -80,7 +68,6 @@ export function ThemeTimelineClient({ timeline }: { timeline: DiscussionsTimelin
   const [topN, setTopN] = useState(DEFAULT_TOP_N);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [expandedThemes, setExpandedThemes] = useState<Theme[] | null>(null);
-  const [expandedMetrics, setExpandedMetrics] = useState<Record<number, ThemeMetric[]> | null>(null);
   const [loadingExpand, setLoadingExpand] = useState(false);
   const [hoveredLineId, setHoveredLineId] = useState<string | null>(null);
 
@@ -152,7 +139,6 @@ export function ThemeTimelineClient({ timeline }: { timeline: DiscussionsTimelin
     if (expandedId === node.id) {
       setExpandedId(null);
       setExpandedThemes(null);
-      setExpandedMetrics(null);
       return;
     }
     setExpandedId(node.id);
@@ -162,23 +148,10 @@ export function ThemeTimelineClient({ timeline }: { timeline: DiscussionsTimelin
       const themesRes = await fetch(`${API_BASE}/themes?${idsParam}`, { cache: "no-store" });
       if (!themesRes.ok) {
         setExpandedThemes([]);
-        setExpandedMetrics({});
         return;
       }
       const themes: Theme[] = await themesRes.json();
-      const metricsRes = await Promise.all(
-        node.theme_ids.map((id) =>
-          fetch(`${API_BASE}/themes/${id}/metrics?months=6`, { cache: "no-store" }).then((r) =>
-            r.ok ? r.json() : []
-          )
-        )
-      );
-      const metricsMap: Record<number, ThemeMetric[]> = {};
-      node.theme_ids.forEach((id, i) => {
-        metricsMap[id] = Array.isArray(metricsRes[i]) ? metricsRes[i] : [];
-      });
       setExpandedThemes(themes);
-      setExpandedMetrics(metricsMap);
     } finally {
       setLoadingExpand(false);
     }
@@ -423,10 +396,9 @@ export function ThemeTimelineClient({ timeline }: { timeline: DiscussionsTimelin
                   <div className="py-8 text-center text-sm text-zinc-500 dark:text-zinc-400">
                     Loading themes…
                   </div>
-                ) : expandedThemes && expandedThemes.length > 0 && expandedMetrics ? (
+                ) : expandedThemes && expandedThemes.length > 0 ? (
                   <ThemeCardGrid
                     list={expandedThemes}
-                    metricsMap={expandedMetrics}
                     readData={readData}
                     allDismissedAt={null}
                     followedIds={new Set()}

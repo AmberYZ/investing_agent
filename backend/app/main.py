@@ -1587,8 +1587,7 @@ def get_themes_network_discussions_snapshots(
 
 
 def _heuristic_narrative_summary(db: Session, theme_id: int):
-    """Build a simple heuristic narrative summary when no cached LLM summary exists."""
-    import json as _json
+    """Placeholder when no LLM memo is cached yet — never a stance tally."""
     narratives = (
         db.query(Narrative)
         .filter(Narrative.theme_id == theme_id)
@@ -1598,25 +1597,70 @@ def _heuristic_narrative_summary(db: Session, theme_id: int):
     if not narratives:
         return NarrativeSummaryExtendedOut(
             summary="No narratives yet for this theme.",
+            investment_relevance=None,
+            what_changed=None,
+            change_narrative_ids=[],
             trending_sub_themes=[],
             inflection_alert=None,
         )
-    parts = [f"This theme has {len(narratives)} narrative(s) in the past month. "]
-    stances = {}
-    for n in narratives:
-        st = n.narrative_stance or "unknown"
-        stances[st] = stances.get(st, 0) + 1
-    if stances:
-        stance_parts = [f"{cnt} {s}" for s, cnt in sorted(stances.items(), key=lambda x: -x[1])]
-        parts.append(f"Stance mix: {', '.join(stance_parts)}. ")
-    for n in narratives[:3]:
-        parts.append(f"\"{n.statement[:50]}…\" " if len(n.statement) > 50 else f"\"{n.statement}\" ")
-    parts.append("(Full LLM summary will be available after the next daily aggregation run.)")
     return NarrativeSummaryExtendedOut(
-        summary="".join(parts).strip(),
+        summary=(
+            f"Analyst memo pending for this theme ({len(narratives)} narrative(s) on file). "
+            "The reasoned daily memo is written by the LLM during the next aggregation run — "
+            "not a stance count."
+        ),
+        investment_relevance=None,
+        what_changed=None,
+        change_narrative_ids=[],
         trending_sub_themes=[],
         inflection_alert=None,
     )
+
+
+def _decode_narrative_summary_meta(raw: str | None) -> dict:
+    """
+    Decode ThemeNarrativeSummaryCache.trending_sub_themes.
+    Supports legacy list-of-strings and new meta object with change ids / briefing fields.
+    """
+    import json as _json
+    empty = {
+        "trending": [],
+        "change_narrative_ids": [],
+        "investment_relevance": None,
+        "what_changed": None,
+    }
+    if not raw:
+        return empty
+    try:
+        parsed = _json.loads(raw)
+    except Exception:
+        return empty
+    if isinstance(parsed, list):
+        return {
+            "trending": [str(v).strip() for v in parsed if str(v).strip()],
+            "change_narrative_ids": [],
+            "investment_relevance": None,
+            "what_changed": None,
+        }
+    if isinstance(parsed, dict):
+        trending = parsed.get("trending") or parsed.get("trending_sub_themes") or []
+        if not isinstance(trending, list):
+            trending = []
+        change_ids: list[int] = []
+        for x in parsed.get("change_narrative_ids") or []:
+            try:
+                change_ids.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        inv = parsed.get("investment_relevance")
+        chg = parsed.get("what_changed")
+        return {
+            "trending": [str(v).strip() for v in trending if str(v).strip()],
+            "change_narrative_ids": change_ids,
+            "investment_relevance": str(inv).strip() if inv else None,
+            "what_changed": str(chg).strip() if chg else None,
+        }
+    return empty
 
 
 @app.get("/themes/narrative-summaries", response_model=dict[str, BatchNarrativeSummaryItemOut])
@@ -1628,7 +1672,6 @@ def get_batch_narrative_summaries(
     Return narrative summaries for multiple themes (30d period).
     Cached when available, otherwise heuristic. Cap 50 IDs per request.
     """
-    import json as _json
     raw = [s.strip() for s in theme_ids.split(",") if s.strip()]
     ids: list[int] = []
     for s in raw:
@@ -1654,21 +1697,22 @@ def get_batch_narrative_summaries(
     for tid in ids:
         cached = cache_by_theme.get(tid)
         if cached and cached.summary:
-            trending = []
-            if cached.trending_sub_themes:
-                try:
-                    trending = _json.loads(cached.trending_sub_themes)
-                except Exception:
-                    trending = []
+            meta = _decode_narrative_summary_meta(cached.trending_sub_themes)
             out[str(tid)] = BatchNarrativeSummaryItemOut(
                 summary=cached.summary,
-                trending_sub_themes=trending,
+                investment_relevance=meta["investment_relevance"],
+                what_changed=meta["what_changed"],
+                change_narrative_ids=meta["change_narrative_ids"],
+                trending_sub_themes=meta["trending"],
                 inflection_alert=cached.inflection_alert,
             )
         else:
             ext = _heuristic_narrative_summary(db, tid)
             out[str(tid)] = BatchNarrativeSummaryItemOut(
                 summary=ext.summary,
+                investment_relevance=ext.investment_relevance,
+                what_changed=ext.what_changed,
+                change_narrative_ids=ext.change_narrative_ids,
                 trending_sub_themes=ext.trending_sub_themes,
                 inflection_alert=ext.inflection_alert,
             )
@@ -1813,7 +1857,7 @@ def get_theme(theme_id: int, db: Session = Depends(get_db)):
     narratives = (
         db.query(Narrative)
         .filter(Narrative.theme_id == theme_id)
-        .order_by(Narrative.last_seen.desc())
+        .order_by(Narrative.last_seen.asc(), Narrative.id.asc())
         .all()
     )
     # First-appeared date = earliest document date (modified_at or received_at) among docs that cite this narrative
@@ -2177,7 +2221,6 @@ def get_theme_narrative_summary(
     Summaries are generated daily by the aggregation pipeline, not on every page load.
     Falls back to a simple heuristic summary if no cached summary exists yet.
     """
-    import json as _json
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
@@ -2190,7 +2233,14 @@ def get_theme_narrative_summary(
     )
     if not narratives:
         if period == "30d":
-            return NarrativeSummaryExtendedOut(summary="No narratives yet for this theme.", trending_sub_themes=[], inflection_alert=None)
+            return NarrativeSummaryExtendedOut(
+                summary="No narratives yet for this theme.",
+                investment_relevance=None,
+                what_changed=None,
+                change_narrative_ids=[],
+                trending_sub_themes=[],
+                inflection_alert=None,
+            )
         return NarrativeSummaryOut(summary="No narratives yet for this theme.")
 
     if period != "30d":
@@ -2206,15 +2256,13 @@ def get_theme_narrative_summary(
         .one_or_none()
     )
     if cached and cached.summary:
-        trending = []
-        if cached.trending_sub_themes:
-            try:
-                trending = _json.loads(cached.trending_sub_themes)
-            except Exception:
-                trending = []
+        meta = _decode_narrative_summary_meta(cached.trending_sub_themes)
         return NarrativeSummaryExtendedOut(
             summary=cached.summary,
-            trending_sub_themes=trending,
+            investment_relevance=meta["investment_relevance"],
+            what_changed=meta["what_changed"],
+            change_narrative_ids=meta["change_narrative_ids"],
+            trending_sub_themes=meta["trending"],
             inflection_alert=cached.inflection_alert,
         )
 
@@ -2882,15 +2930,15 @@ def get_theme_metrics_by_sub_theme(
 @app.get("/themes/{theme_id}/narratives", response_model=list[NarrativeOut])
 def get_theme_narratives(
     theme_id: int,
-    date: Optional[str] = Query(None, description="'today' to list narratives that got evidence today (newest first)"),
+    date: Optional[str] = Query(None, description="'today' to list narratives that got evidence today (oldest→newest)"),
     since: Optional[str] = Query(None, description="ISO date (YYYY-MM-DD) to list narratives with evidence on or after this date"),
-    limit: Optional[int] = Query(None, ge=1, le=500, description="Max number of narratives to return (newest first)"),
-    offset: int = Query(0, ge=0, description="Number of narratives to skip (for pagination / load more)"),
+    limit: Optional[int] = Query(None, ge=1, le=500, description="Page size. With offset from the end: most recent batch, oldest→newest within batch"),
+    offset: int = Query(0, ge=0, description="How many newer-end narratives to skip backward (0 = latest batch)"),
     on_latest_date: bool = Query(False, description="If true, return all narratives with evidence on the theme's most recent activity date (no limit)"),
     include_children: bool = Query(False, description="If true, include narratives from all descendant (child) themes"),
     db: Session = Depends(get_db),
 ):
-    """List narratives for this theme. With include_children=true (e.g. for My Basket) returns narratives from this theme and all its child themes."""
+    """List narratives for this theme, oldest → newest. Paginated pages are recent-first batches still ordered chronologically."""
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
@@ -2951,17 +2999,21 @@ def get_theme_narratives(
     if not narrative_ids:
         return []
 
-    # Order by last_seen desc (newest first). When on_latest_date, do not apply limit or offset.
+    # Chronological (oldest → newest). When paginating, take a window from the *end*
+    # so the first page is the most recent batch, still ordered oldest→newest within it.
+    # offset=0 → latest `limit` rows; offset=limit → previous (older) batch; prepend on client.
     q = (
         db.query(Narrative)
         .filter(Narrative.id.in_(narrative_ids))
-        .order_by(Narrative.last_seen.desc())
+        .order_by(Narrative.last_seen.asc(), Narrative.id.asc())
     )
-    if not on_latest_date:
-        if offset:
-            q = q.offset(offset)
-        if limit is not None:
-            q = q.limit(limit)
+    if not on_latest_date and limit is not None:
+        total = q.count()
+        end = total - offset
+        start = max(0, end - limit)
+        if end <= 0 or start >= end:
+            return []
+        q = q.offset(start).limit(end - start)
     narratives = q.all()
     earliest_doc = (
         db.query(Evidence.narrative_id, func.min(doc_date).label("earliest"))

@@ -1,6 +1,7 @@
 """
-Cross-universe market insights: consensus/non-consensus opportunities & risks,
-plus forward-looking deductions from recent themes, narratives, and documents.
+Cross-universe market insights: consensus/non-consensus opportunities & risks
+(with independent valuation judgment via EODHD), plus a forward look that is
+deliberately detached from source documents.
 """
 from __future__ import annotations
 
@@ -48,6 +49,58 @@ def _parse_llm_json(raw: str) -> dict[str, Any]:
     if text.endswith("```"):
         text = text.rsplit("```", 1)[0].rstrip()
     return json.loads(text.strip())
+
+
+def _gather_valuations(db: Session, themes: list[Any], limit: int = 12) -> list[dict[str, Any]]:
+    """Pull compact EODHD valuation snapshots for theme-linked tickers."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    try:
+        from app.market_data import get_prices_and_valuation
+    except Exception as e:
+        logger.debug("Valuation import skipped: %s", e)
+        return out
+
+    for theme in themes[:limit]:
+        sym_row = (
+            db.query(ThemeInstrument.symbol)
+            .filter(ThemeInstrument.theme_id == theme.id)
+            .order_by(ThemeInstrument.symbol)
+            .first()
+        )
+        if not sym_row or not sym_row[0]:
+            continue
+        symbol = str(sym_row[0]).upper().strip()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        try:
+            data = get_prices_and_valuation(symbol, months=6)
+        except Exception as e:
+            logger.debug("Valuation fetch failed for %s: %s", symbol, e)
+            continue
+        if not isinstance(data, dict):
+            continue
+        entry = {
+            "symbol": symbol,
+            "theme": theme.canonical_label,
+            "trailing_pe": data.get("trailing_pe"),
+            "forward_pe": data.get("forward_pe"),
+            "peg_ratio": data.get("peg_ratio"),
+            "ev_to_ebitda": data.get("ev_to_ebitda"),
+            "last_close": None,
+            "pct_1m": data.get("pct_1m") or data.get("return_1m"),
+            "message": data.get("message"),
+        }
+        prices = data.get("prices") or []
+        if prices:
+            last = prices[-1] if isinstance(prices[-1], dict) else None
+            if last:
+                entry["last_close"] = last.get("close") or last.get("adjusted_close")
+        # Skip empty shells
+        if any(entry.get(k) is not None for k in ("trailing_pe", "forward_pe", "peg_ratio", "ev_to_ebitda", "last_close")):
+            out.append(entry)
+    return out
 
 
 def _gather_context(db: Session, since: dt.date) -> dict[str, Any]:
@@ -178,6 +231,8 @@ def _gather_context(db: Session, since: dt.date) -> dict[str, Any]:
         ],
     }
 
+    market_valuations = _gather_valuations(db, list(trending) + list(debated), limit=12)
+
     external_news: list[dict[str, str]] = []
     try:
         from app.market_data import fetch_news_for_ticker
@@ -224,6 +279,7 @@ def _gather_context(db: Session, since: dt.date) -> dict[str, Any]:
         "consensus_narratives": consensus_narratives,
         "contrarian_narratives": contrarian_narratives,
         "analytics": analytics,
+        "market_valuations": market_valuations,
         "external_news": external_news[:15],
     }
 
@@ -234,6 +290,8 @@ def _validate_evidence(
     doc_ids: set[int],
     narr_ids: set[int],
     theme_ids: set[int],
+    *,
+    allow_empty: bool = False,
 ) -> list[dict[str, Any]]:
     """Keep only evidence citations that reference real IDs; enrich with labels."""
     out: list[dict[str, Any]] = []
@@ -290,6 +348,8 @@ def _validate_evidence(
                 entry["theme_id"] = row.theme_id
                 entry["theme_label"] = row.canonical_label
         out.append(entry)
+    if allow_empty and not out:
+        return []
     return out[:6]
 
 
@@ -300,11 +360,15 @@ def _parse_insight_items(
     narr_ids: set[int],
     theme_ids: set[int],
     default_kind: str,
+    *,
+    require_evidence: bool = True,
+    max_items: int = 3,
+    require_tickers: bool = False,
 ) -> list[dict[str, Any]]:
     if not isinstance(section, list):
         return []
     items: list[dict[str, Any]] = []
-    for raw in section[:3]:
+    for raw in section[: max(1, max_items)]:
         if not isinstance(raw, dict):
             continue
         title = (raw.get("title") or "").strip()
@@ -319,7 +383,30 @@ def _parse_insight_items(
             doc_ids,
             narr_ids,
             theme_ids,
+            allow_empty=not require_evidence,
         )
+        if require_evidence and not evidence:
+            # Soft-fail: keep item if reasoning is substantive (analyst judgment may outrun citations)
+            if len(reasoning) < 40:
+                continue
+
+        tickers_raw = raw.get("tickers") or raw.get("instruments") or raw.get("symbols") or []
+        tickers: list[str] = []
+        if isinstance(tickers_raw, str):
+            tickers_raw = [t.strip() for t in tickers_raw.replace(";", ",").split(",")]
+        if isinstance(tickers_raw, list):
+            for t in tickers_raw:
+                sym = str(t or "").strip().upper()
+                if not sym:
+                    continue
+                # Keep short ticker-like tokens (incl. ETF symbols); drop sentences
+                if len(sym) > 12 or " " in sym:
+                    continue
+                if sym not in tickers:
+                    tickers.append(sym)
+        if require_tickers and not tickers:
+            continue
+
         items.append(
             {
                 "title": title,
@@ -327,9 +414,20 @@ def _parse_insight_items(
                 "hypothesis": hypothesis,
                 "reasoning": reasoning,
                 "evidence": evidence,
+                "tickers": tickers,
             }
         )
     return items
+
+
+def _call_llm(system: str, user_prompt: str, max_tokens: int = 4096) -> dict[str, Any]:
+    from app.llm.provider import chat_completion
+
+    model = getattr(settings, "llm_universe_insights_model", None) or getattr(
+        settings, "llm_trading_digest_model", None
+    ) or settings.llm_model
+    raw = chat_completion(system=system, user=user_prompt, max_tokens=max_tokens, model=model)
+    return _parse_llm_json(raw)
 
 
 def generate_universe_insights(db: Session, *, force: bool = False) -> bool:
@@ -368,67 +466,163 @@ def generate_universe_insights(db: Session, *, force: bool = False) -> bool:
     narr_ids = {n["narrative_id"] for n in context["narratives"]}
     theme_ids = {n["theme_id"] for n in context["narratives"]}
 
-    context_json = json.dumps(context, ensure_ascii=False, indent=2)
-    if len(context_json) > 120_000:
-        context_json = context_json[:120_000] + "\n... [truncated]"
+    # Slim context for consensus / non-consensus (still needs docs + valuations)
+    consensus_context = {
+        "since": context["since"],
+        "documents": context["documents"],
+        "narratives": context["narratives"][:40],
+        "evidence_catalog": context["evidence_catalog"][:50],
+        "consensus_narratives": context["consensus_narratives"],
+        "contrarian_narratives": context["contrarian_narratives"],
+        "analytics": context["analytics"],
+        "market_valuations": context["market_valuations"],
+        "external_news": context["external_news"],
+    }
+    context_json = json.dumps(consensus_context, ensure_ascii=False, indent=2)
+    if len(context_json) > 100_000:
+        context_json = context_json[:100_000] + "\n... [truncated]"
 
-    user_prompt = (
-        f"You are a senior investment strategist synthesizing the FULL recent research universe "
-        f"(past {lookback} days). Your job is NOT to summarize — it is to REASON and DEDUCE.\n\n"
-        "Use the structured context below (documents, narratives, evidence catalog, analytics, external news).\n"
-        "Combine patterns across themes. Surface second-order implications. Flag what the crowd agrees on vs misses.\n\n"
+    consensus_prompt = (
+        f"You are a senior investment strategist with independent judgment. "
+        f"Lookback: past {lookback} days.\n\n"
+        "Your job is NOT to pick the latest articles or parrot what documents call "
+        "'opportunities' or 'risks'. REASON for yourself.\n\n"
+        "For every opportunity or risk you propose:\n"
+        "1) Start from patterns across themes/narratives (not a single doc).\n"
+        "2) Stress-test with market_valuations (trailing/forward PE, PEG, EV/EBITDA, price).\n"
+        "   - A document calling something an 'opportunity' is NOT enough if valuation already "
+        "prices in the good news, or if risk looks overstated relative to multiples.\n"
+        "   - Explicitly mention valuation in reasoning when a ticker is in market_valuations.\n"
+        "3) Prefer second-order implications over restating headlines.\n\n"
         f"CONTEXT:\n{context_json}\n\n"
-        "Return ONLY valid JSON (no markdown fence) with exactly these keys:\n"
+        "Return ONLY valid JSON (no markdown fence):\n"
         "{\n"
-        '  "consensus": [ /* up to 3 items: widely-agreed opportunities OR risks */ ],\n'
-        '  "non_consensus": [ /* up to 3 items: emerging, debated, or under-noticed angles */ ],\n'
-        '  "forward_look": [ /* up to 3 items: logical deductions on rising sectors/themes/companies */ ]\n'
+        '  "consensus": [ /* up to 3: widely-agreed setups you judge as real opportunities OR risks '
+        "AFTER valuation/logic check */ ],\n"
+        '  "non_consensus": [ /* up to 3: emerging/debated/under-noticed angles you independently '
+        "find investable */ ]\n"
         "}\n\n"
-        "Each item must have:\n"
+        "Each item:\n"
         '- "title": short headline\n'
-        '- "kind": one of opportunity | risk | sector | theme | company\n'
-        '- "hypothesis": your deduced view (1-3 sentences, specific)\n'
-        '- "reasoning": explain the logic chain — what facts/patterns led here (2-4 sentences). '
-        "Show your work; cite themes and documents by name in the text.\n"
-        '- "evidence": array of 1-4 citations using ONLY IDs from the context catalog:\n'
-        '  {"document_id": int|null, "narrative_id": int|null, "theme_id": int|null, "quote_snippet": "..."}\n\n'
+        '- "kind": opportunity | risk\n'
+        '- "hypothesis": your view (1-3 sentences, specific, investable)\n'
+        '- "reasoning": logic chain including valuation judgment where relevant (3-5 sentences). '
+        "Show your work; cite themes/companies by name.\n"
+        '- "evidence": 1-4 citations using ONLY IDs from the context catalog '
+        '(document_id / narrative_id / theme_id + quote_snippet)\n\n'
         "Rules:\n"
-        "- consensus = multiple sources/themes align; relation=consensus narratives or repeated themes\n"
-        "- non_consensus = contrarian/new_angle narratives, debated themes, low attention but meaningful signals\n"
-        "- forward_look = extrapolate from today's trajectory (trending themes, inflections, catalysts) — "
-        "state uncertainty but be specific about WHAT would rise and WHY\n"
-        "- Every item needs at least one valid evidence citation with real IDs\n"
-        "- Prefer actionable investment framing; avoid generic macro platitudes\n"
+        "- Do NOT invent opportunities just because a file says so.\n"
+        "- Reject or downgrade crowded narratives that look fully priced.\n"
+        "- Prefer actionable framing over generic macro platitudes.\n"
     )
 
     system = (
-        "You are a rigorous investment analyst producing structured market insights. "
-        "Reason deductively from evidence. Return valid JSON only."
+        "You are a rigorous investment analyst. Apply independent judgment; "
+        "documents are inputs, not conclusions. Return valid JSON only."
     )
 
     try:
-        from app.llm.provider import chat_completion
-
-        model = getattr(settings, "llm_universe_insights_model", None) or getattr(
-            settings, "llm_trading_digest_model", None
-        ) or settings.llm_model
-        raw = chat_completion(system=system, user=user_prompt, max_tokens=4096, model=model)
-        data = _parse_llm_json(raw)
+        data = _call_llm(system, consensus_prompt, max_tokens=4096)
     except Exception as e:
-        logger.warning("Universe insights LLM failed: %s", e)
+        logger.warning("Universe insights (consensus) LLM failed: %s", e)
         return False
+
+    # Forward look: deliberately detached from file evidence
+    forward_seed = {
+        "as_of": dt.date.today().isoformat(),
+        "analytics_signals": context["analytics"],
+        "theme_labels_in_play": sorted(
+            {n["theme_label"] for n in context["narratives"] if n.get("theme_label")}
+        )[:25],
+        "market_valuations": context["market_valuations"],
+        "note": (
+            "These labels are ONLY orientation. Do NOT cite documents, quotes, or "
+            "restate research notes. Invent your own forward-looking logic."
+        ),
+    }
+    forward_json = json.dumps(forward_seed, ensure_ascii=False, indent=2)
+    forward_prompt = (
+        "You are a forward-looking investment strategist writing speculative but LOGICAL "
+        "trade ideas for the next 6–18 months.\n\n"
+        "HOW TO THINK (multi-step, ahead of the crowd):\n"
+        "- Start from what is already loud / crowded / early in a cycle TODAY.\n"
+        "- Push the chain FORWARD: what becomes scarce, bottlenecked, over-owned, "
+        "or mean-reverting AFTER the current phase — the next and next-next link "
+        "in the value chain, capital cycle, or adoption curve — not the theme "
+        "already on every slide deck.\n"
+        "- Ask where the P&L and multiples actually migrate next (suppliers, enablers, "
+        "substitutes, hedges, cleanup trades, late-cycle beneficiaries, post-peak fades).\n"
+        "- Uncertainty is fine; the logic chain must be explicit. Do not chase being 'correct'.\n\n"
+        "LANDING RULE (mandatory):\n"
+        "- Every item MUST end on investable instruments: specific single-name tickers "
+        "and/or liquid ETFs (US or major ADRs preferred). Theme-only ideas without tickers "
+        "are invalid.\n"
+        "- Prefer 1–4 concrete symbols per idea. Say WHY those names (not peers) capture "
+        "the next phase.\n\n"
+        "CRITICAL RULES:\n"
+        "- Completely DETACH from research files. Do NOT quote, cite, or summarize documents.\n"
+        "- evidence must be an empty array [].\n"
+        "- No fixed count: output as many distinct ideas as you can defend logically "
+        "(typically several; skip weak filler). Quality over padding — but do not "
+        "artificially stop at 3.\n"
+        "- Avoid vague sector platitudes. If the thesis is generic, drop it or sharpen "
+        "to names.\n\n"
+        f"ORIENTATION (not sources to cite):\n{forward_json}\n\n"
+        "Return ONLY valid JSON:\n"
+        "{\n"
+        '  "forward_look": [ /* N items — as many as are logical */ ]\n'
+        "}\n"
+        "Each item must have:\n"
+        '- "title": short headline that already hints at the investable angle\n'
+        '- "kind": company | etf | theme  (prefer company/etf when landed on names)\n'
+        '- "hypothesis": 1-3 sentences — the forward bet, naming the tickers\n'
+        '- "reasoning": 4-7 sentences — the multi-step chain from today\'s setup → '
+        "next phase → why THESE tickers/ETFs\n"
+        '- "tickers": ["SYM1", "SYM2", ...]  // required, non-empty, real tradable symbols\n'
+        '- "evidence": []\n'
+    )
+
+    forward_system = (
+        "You invent coherent, multi-step forward investment hypotheses that land on "
+        "specific tickers or ETFs. No document citations. Return valid JSON only."
+    )
+
+    forward_data: dict[str, Any] = {}
+    try:
+        forward_data = _call_llm(forward_system, forward_prompt, max_tokens=6144)
+        if getattr(settings, "llm_delay_after_request_seconds", 0) > 0:
+            time.sleep(settings.llm_delay_after_request_seconds)
+    except Exception as e:
+        logger.warning("Universe insights (forward look) LLM failed: %s", e)
+        # Continue with consensus-only if forward fails
 
     payload = {
         "consensus": _parse_insight_items(
-            data.get("consensus"), db, doc_ids, narr_ids, theme_ids, "opportunity"
+            data.get("consensus"), db, doc_ids, narr_ids, theme_ids, "opportunity",
+            require_evidence=True,
+            max_items=3,
         ),
         "non_consensus": _parse_insight_items(
-            data.get("non_consensus"), db, doc_ids, narr_ids, theme_ids, "risk"
+            data.get("non_consensus"), db, doc_ids, narr_ids, theme_ids, "risk",
+            require_evidence=True,
+            max_items=3,
         ),
         "forward_look": _parse_insight_items(
-            data.get("forward_look"), db, doc_ids, narr_ids, theme_ids, "theme"
+            forward_data.get("forward_look") if forward_data else data.get("forward_look"),
+            db,
+            doc_ids,
+            narr_ids,
+            theme_ids,
+            "company",
+            require_evidence=False,
+            max_items=15,
+            require_tickers=True,
         ),
     }
+    # Strip any accidental evidence from forward look
+    for item in payload["forward_look"]:
+        item["evidence"] = []
+
     if not any(payload.values()):
         logger.warning("Universe insights LLM returned empty sections")
         return False

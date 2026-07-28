@@ -5,8 +5,10 @@ Main theme from title and opening (important)
 - For single-topic reports (one investable thesis with multiple beneficiaries, segments, or angles), use ONE main theme whose label reflects the overarching topic from the title/opening; put specific beneficiaries, segments, or angles as sub-themes and narratives. Do not fragment into many small themes when the document is clearly about one value chain or one thesis.
 
 Coverage and richness (important)
-- For long or detailed documents, extract full breadth: multiple sub-themes and multiple narratives so that the output reflects the document's content. Do not collapse or over-summarize.
-- Each distinct claim or angle that affects investment decisions should appear as its own narrative with supporting evidence.
+- Prefer fewer, higher-signal narratives. Typical document: 2–6 narratives total — not one per minor claim.
+- Merge related claims under the same investable point into ONE narrative. Do not fragment (e.g. do not split "demand up" / "supply tight" / "prices rising" into three narratives when they are one thesis).
+- Write each narrative in plain, straightforward language: one clear claim, concrete numbers when available, no hedging fluff or research-report padding.
+- Only extract claims that would change an investment decision (position, sizing, timing, or risk). Skip color commentary and restatements of the same point.
 
 What NOT to extract (avoid perfunctory language) — CRITICAL: do not create narratives from these.
 - Never extract as narratives any "Risks to Downside" or "Risks to Upside" section (or equivalent: "Key risks", "Potential downside/upside risks", "Risks to our view"). These are standard boilerplate in equity research and add no real information. Do not output any narrative whose evidence is mainly from such a list.
@@ -62,6 +64,7 @@ Sub-theme
 
 Narrative
 - The claim or change observed through the sub-theme lens—what changed, emerged, or shifted. Must be time-variant (could be false in weeks or months). Do not create narratives from "Risks to Downside", "Risks to Upside", or similar risk-list sections; omit those entirely.
+- Keep statements SHORT and DIRECT (1–2 sentences). Lead with the investable claim; put supporting detail in evidence quotes, not in long narrative prose.
 - Evidence (quotes): For each narrative, the "evidence" array must contain direct quotes or key sentences from the document when available. Use exact wording from the text; Aim for sentences or short passage that supports the narrative with key data, details, examples, elaboration.
 - Lens vs claim: Sub-theme = the lens or catalyst (what aspect or what driver). Narrative = the claim or change through that lens.
   - Bad: sub_theme "high demand", narrative "Demand remains high".

@@ -3,14 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ReaderThemeSection } from "./ReaderThemeSection";
 
-type ThemeMetric = {
-  theme_id: number;
-  date: string;
-  doc_count: number;
-  mention_count: number;
-  share_of_voice: number | null;
-};
-
 type Theme = {
   id: number;
   canonical_label: string;
@@ -19,35 +11,13 @@ type Theme = {
   is_new: boolean;
 };
 
-type ThemeMetricsByStance = {
-  date: string;
-  bullish_count: number;
-  bearish_count: number;
-  mixed_count: number;
-  neutral_count: number;
-  total_count: number;
-};
-
-type ThemeSubThemeDaily = {
-  date: string;
-  sub_theme: string;
-  doc_count: number;
-  mention_count: number;
-};
-
 type NarrativeSummaryData = {
   summary: string;
+  investment_relevance?: string | null;
+  what_changed?: string | null;
+  change_narrative_ids?: number[];
   trending_sub_themes?: string[];
   inflection_alert?: string | null;
-};
-
-type ThemeDocument = {
-  id: number;
-  filename: string;
-  received_at: string;
-  summary: string | null;
-  narratives: { statement: string; stance: string; relation_to_prevailing: string }[];
-  excerpts: string[];
 };
 
 type Narrative = {
@@ -65,9 +35,6 @@ type Narrative = {
 
 type ThemeSectionData = {
   narrativeSummary: NarrativeSummaryData | null;
-  metricsByStance: ThemeMetricsByStance[];
-  metricsBySubTheme: ThemeSubThemeDaily[];
-  documents: ThemeDocument[];
   narratives: Narrative[];
 };
 
@@ -85,12 +52,11 @@ async function fetchJson<T>(url: string): Promise<T> {
 
 export function UnreadReaderView({
   unreadThemes,
-  metricsMap,
-  months,
 }: {
   unreadThemes: Theme[];
-  metricsMap: Record<number, ThemeMetric[]>;
-  months: number;
+  /** @deprecated Charts removed; kept for call-site compatibility. */
+  metricsMap?: unknown;
+  months?: number;
 }) {
   const [sectionData, setSectionData] = useState<Record<number, ThemeSectionData>>({});
   const [loading, setLoading] = useState(true);
@@ -98,7 +64,6 @@ export function UnreadReaderView({
   const sectionRefs = useRef<(HTMLElement | null)[]>([]);
   const narrativesStartRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  // Fetch batch narrative summaries, then per-theme data in parallel
   useEffect(() => {
     if (unreadThemes.length === 0) {
       setLoading(false);
@@ -121,23 +86,13 @@ export function UnreadReaderView({
 
       const results = await Promise.allSettled(
         unreadThemes.map(async (theme) => {
-          const [metricsByStance, metricsBySubTheme, documents, narratives] = await Promise.all([
-            fetchJson<ThemeMetricsByStance[]>(
-              `${API_BASE}/themes/${theme.id}/metrics-by-stance?months=${months}`
-            ).catch(() => []),
-            fetchJson<ThemeSubThemeDaily[]>(
-              `${API_BASE}/themes/${theme.id}/metrics-by-sub-theme?months=${months}`
-            ).catch(() => []),
-            fetchJson<ThemeDocument[]>(`${API_BASE}/themes/${theme.id}/documents`).catch(() => []),
-            fetchJson<Narrative[]>(`${API_BASE}/themes/${theme.id}/narratives`).catch(() => []),
-          ]);
+          const narratives = await fetchJson<Narrative[]>(
+            `${API_BASE}/themes/${theme.id}/narratives`
+          ).catch(() => []);
           return {
             themeId: theme.id,
             data: {
               narrativeSummary: summariesMap[String(theme.id)] ?? null,
-              metricsByStance,
-              metricsBySubTheme,
-              documents,
               narratives,
             },
           };
@@ -158,9 +113,8 @@ export function UnreadReaderView({
     return () => {
       cancelled = true;
     };
-  }, [unreadThemes, months]);
+  }, [unreadThemes]);
 
-  // j/k: move to next/previous theme and scroll so "Narratives" for that theme is in view
   const scrollToIndex = useCallback(
     (index: number) => {
       const i = Math.max(0, Math.min(index, unreadThemes.length - 1));
@@ -220,7 +174,6 @@ export function UnreadReaderView({
 
   return (
     <div className="flex max-h-[calc(100vh-10rem)] flex-col overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
-      {/* Progress indicator: sticky below Grid/Reader/Mark-all row, stays at top of this scroll area */}
       <div className="sticky top-0 z-10 flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex items-center gap-3">
           <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
@@ -250,12 +203,10 @@ export function UnreadReaderView({
         </p>
       </div>
 
-      {/* Scrollable feed of theme sections */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="space-y-8 p-4">
         {unreadThemes.map((theme, i) => {
           const data = sectionData[theme.id];
-          const metrics = metricsMap[theme.id] ?? [];
           return (
             <div
               key={theme.id}
@@ -276,10 +227,6 @@ export function UnreadReaderView({
                   description: theme.description,
                 }}
                 narrativeSummary={data?.narrativeSummary ?? null}
-                metrics={metrics}
-                metricsByStance={data?.metricsByStance ?? []}
-                metricsBySubTheme={data?.metricsBySubTheme ?? []}
-                documents={data?.documents ?? []}
                 narratives={data?.narratives ?? []}
                 showUnreadBadge
                 narrativesStartRef={(el) => {
