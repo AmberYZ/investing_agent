@@ -456,11 +456,17 @@ def compute_theme_sub_theme_metrics(db: Session, theme_id: Optional[int] = None)
     db.commit()
 
 
-def generate_theme_narrative_summaries(db: Session, theme_id: Optional[int] = None) -> int:
+def generate_theme_narrative_summaries(
+    db: Session,
+    theme_id: Optional[int] = None,
+    theme_ids: Optional[list[int]] = None,
+) -> int:
     """
     Generate LLM-powered narrative summaries for themes (past 30 days).
     Stores results in ThemeNarrativeSummaryCache.
     Returns count of summaries generated.
+
+    Pass theme_id for one theme, theme_ids for a set, or neither for all themes.
     """
     import json
     import logging
@@ -474,9 +480,17 @@ def generate_theme_narrative_summaries(db: Session, theme_id: Optional[int] = No
         return 0
 
     q = db.query(Theme)
-    if theme_id is not None:
+    if theme_ids is not None:
+        ids = sorted({int(t) for t in theme_ids if t is not None})
+        if not ids:
+            return 0
+        q = q.filter(Theme.id.in_(ids))
+    elif theme_id is not None:
         q = q.filter(Theme.id == theme_id)
     themes = q.all()
+
+    if not themes:
+        return 0
 
     since = dt.date.today() - dt.timedelta(days=30)
     doc_date = func.date(func.coalesce(Document.modified_at, Document.received_at))

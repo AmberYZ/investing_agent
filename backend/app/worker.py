@@ -596,6 +596,36 @@ def _process_job_inner(db: Session, job: IngestJob, doc: Document, storage) -> N
     job.finished_at = dt.datetime.now(dt.timezone.utc)
     db.commit()
 
+    # Best-effort: refresh analyst memos for themes touched by this document.
+    # Failures must not flip the job back to failed — ingest already succeeded.
+    affected_theme_ids = sorted({t.id for t in seen_theme_by_canon.values()})
+    if affected_theme_ids and settings.llm_api_key and not settings.use_heuristic_extraction:
+        try:
+            from app.aggregations import generate_theme_narrative_summaries
+
+            logger.info(
+                "job_id=%s doc_id=%s: refreshing analyst memos for theme_ids=%s",
+                job.id,
+                doc.id,
+                affected_theme_ids,
+            )
+            with _get_llm_semaphore():
+                n = generate_theme_narrative_summaries(db, theme_ids=affected_theme_ids)
+            logger.info(
+                "job_id=%s doc_id=%s: analyst memos refreshed count=%s",
+                job.id,
+                doc.id,
+                n,
+            )
+            _apply_llm_delay_after_request()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "job_id=%s doc_id=%s: analyst memo refresh failed (ingest still done): %s",
+                job.id,
+                doc.id,
+                e,
+            )
+
 
 def _process_job_standalone(job_id: int) -> None:
     """Process a single ingest job in its own DB session (thread-safe for concurrent execution)."""

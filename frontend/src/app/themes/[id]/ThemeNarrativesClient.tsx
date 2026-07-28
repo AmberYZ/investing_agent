@@ -43,7 +43,7 @@ export function ThemeNarrativesClient({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
-  const [olderOffset, setOlderOffset] = useState(0);
+  const loadMoreRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const fetchPage = useCallback(
@@ -66,13 +66,11 @@ export function ThemeNarrativesClient({
     let cancelled = false;
     setLoading(true);
     setError(null);
-    setOlderOffset(0);
     fetchPage(0)
       .then((data) => {
         if (!cancelled) {
           const list = Array.isArray(data) ? data : [];
           setNarratives(list);
-          setOlderOffset(list.length);
           setHasMore(list.length >= PAGE_SIZE);
         }
       })
@@ -87,23 +85,21 @@ export function ThemeNarrativesClient({
     };
   }, [fetchPage]);
 
-  const loadEarlier = useCallback(() => {
+  const loadMore = useCallback(() => {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
-    const offset = olderOffset;
+    const offset = narratives.length;
     fetchPage(offset)
       .then((data) => {
-        const earlier = Array.isArray(data) ? data : [];
+        const next = Array.isArray(data) ? data : [];
         setNarratives((prev) => {
           const seen = new Set(prev.map((n) => n.id));
-          const merged = [...earlier.filter((n) => !seen.has(n.id)), ...prev];
-          return merged;
+          return [...prev, ...next.filter((n) => !seen.has(n.id))];
         });
-        setOlderOffset(offset + earlier.length);
-        setHasMore(earlier.length >= PAGE_SIZE);
+        setHasMore(next.length >= PAGE_SIZE);
       })
       .finally(() => setLoadingMore(false));
-  }, [fetchPage, loadingMore, hasMore, olderOffset]);
+  }, [fetchPage, loadingMore, hasMore, narratives.length]);
 
   if (loading) {
     return (
@@ -131,29 +127,29 @@ export function ThemeNarrativesClient({
         </p>
       )}
       <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-        Oldest → newest within each batch. Use Load earlier for older items.
+        Newest dates first; within a document, reading order.
       </p>
-      {narratives.length > 0 && (hasMore || loadingMore) && (
-        <div className="flex flex-col items-center gap-2 py-2">
-          {loadingMore ? (
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">Loading earlier…</span>
-          ) : (
-            <button
-              type="button"
-              onClick={loadEarlier}
-              className="rounded border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
-            >
-              Load earlier
-            </button>
-          )}
-        </div>
-      )}
       <TodaysNarratives
         narratives={narratives}
         themeId={themeId}
         themeLabel={themeLabel}
         changeNarrativeIds={changeNarrativeIds}
       />
+      {narratives.length > 0 && (hasMore || loadingMore) && (
+        <div ref={loadMoreRef} className="flex flex-col items-center gap-2 py-4">
+          {loadingMore ? (
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">Loading more…</span>
+          ) : (
+            <button
+              type="button"
+              onClick={loadMore}
+              className="rounded border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+            >
+              Load more
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

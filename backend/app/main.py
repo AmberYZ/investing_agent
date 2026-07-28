@@ -1857,7 +1857,7 @@ def get_theme(theme_id: int, db: Session = Depends(get_db)):
     narratives = (
         db.query(Narrative)
         .filter(Narrative.theme_id == theme_id)
-        .order_by(Narrative.last_seen.asc(), Narrative.id.asc())
+        .order_by(Narrative.last_seen.desc(), Narrative.id.asc())
         .all()
     )
     # First-appeared date = earliest document date (modified_at or received_at) among docs that cite this narrative
@@ -2930,15 +2930,20 @@ def get_theme_metrics_by_sub_theme(
 @app.get("/themes/{theme_id}/narratives", response_model=list[NarrativeOut])
 def get_theme_narratives(
     theme_id: int,
-    date: Optional[str] = Query(None, description="'today' to list narratives that got evidence today (oldest→newest)"),
+    date: Optional[str] = Query(None, description="'today' to list narratives that got evidence today"),
     since: Optional[str] = Query(None, description="ISO date (YYYY-MM-DD) to list narratives with evidence on or after this date"),
-    limit: Optional[int] = Query(None, ge=1, le=500, description="Page size. With offset from the end: most recent batch, oldest→newest within batch"),
-    offset: int = Query(0, ge=0, description="How many newer-end narratives to skip backward (0 = latest batch)"),
+    limit: Optional[int] = Query(None, ge=1, le=500, description="Page size (newest dates first)"),
+    offset: int = Query(0, ge=0, description="Skip this many narratives from the newest-first list"),
     on_latest_date: bool = Query(False, description="If true, return all narratives with evidence on the theme's most recent activity date (no limit)"),
     include_children: bool = Query(False, description="If true, include narratives from all descendant (child) themes"),
     db: Session = Depends(get_db),
 ):
-    """List narratives for this theme, oldest → newest. Paginated pages are recent-first batches still ordered chronologically."""
+    """
+    List narratives for this theme.
+
+    Order: newest document dates first; within the same document, extraction /
+    reading order (sequential, not reversed).
+    """
     theme = db.query(Theme).filter(Theme.id == theme_id).one_or_none()
     if theme is None:
         raise HTTPException(status_code=404, detail="Theme not found")
@@ -2999,22 +3004,65 @@ def get_theme_narratives(
     if not narrative_ids:
         return []
 
-    # Chronological (oldest → newest). When paginating, take a window from the *end*
-    # so the first page is the most recent batch, still ordered oldest→newest within it.
-    # offset=0 → latest `limit` rows; offset=limit → previous (older) batch; prepend on client.
-    q = (
+    narratives = (
         db.query(Narrative)
         .filter(Narrative.id.in_(narrative_ids))
-        .order_by(Narrative.last_seen.asc(), Narrative.id.asc())
+        .all()
     )
+    by_id = {n.id: n for n in narratives}
+
+    # Sort keys from evidence: newest primary-doc date first; within that doc, extraction order.
+    ev_rows = (
+        db.query(
+            Evidence.narrative_id,
+            Evidence.document_id,
+            Evidence.id.label("evidence_id"),
+            doc_date.label("d"),
+        )
+        .join(Document, Document.id == Evidence.document_id)
+        .filter(Evidence.narrative_id.in_(narrative_ids))
+        .all()
+    )
+    from collections import defaultdict
+
+    ev_by_narr: dict[int, list] = defaultdict(list)
+    for r in ev_rows:
+        ev_by_narr[int(r.narrative_id)].append(r)
+
+    def _as_date(v) -> dt.date:
+        if v is None:
+            return dt.date.min
+        if isinstance(v, dt.datetime):
+            return v.date()
+        if isinstance(v, dt.date):
+            return v
+        try:
+            return dt.datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return dt.date.min
+
+    def _sort_key(nid: int) -> tuple:
+        evs = ev_by_narr.get(nid) or []
+        if not evs:
+            n = by_id.get(nid)
+            fallback = _as_date(getattr(n, "last_seen", None) if n else None)
+            return (-fallback.toordinal(), 0, nid, nid)
+        primary = max(evs, key=lambda e: (_as_date(e.d), int(e.evidence_id)))
+        primary_date = _as_date(primary.d)
+        primary_doc = int(primary.document_id)
+        within_ord = min(
+            int(e.evidence_id)
+            for e in evs
+            if int(e.document_id) == primary_doc
+        )
+        # Newest dates first; within same doc, sequential (ascending evidence id).
+        return (-primary_date.toordinal(), -primary_doc, within_ord, nid)
+
+    ordered_ids = sorted(by_id.keys(), key=_sort_key)
     if not on_latest_date and limit is not None:
-        total = q.count()
-        end = total - offset
-        start = max(0, end - limit)
-        if end <= 0 or start >= end:
-            return []
-        q = q.offset(start).limit(end - start)
-    narratives = q.all()
+        ordered_ids = ordered_ids[offset : offset + limit]
+    narratives = [by_id[i] for i in ordered_ids]
+
     earliest_doc = (
         db.query(Evidence.narrative_id, func.min(doc_date).label("earliest"))
         .join(Document, Document.id == Evidence.document_id)
@@ -3030,11 +3078,12 @@ def get_theme_narratives(
             theme_label_by_id[t.id] = t.canonical_label
     result = []
     for n in narratives:
+        # Quotes in document order (page, then evidence id) so within-doc reading feels sequential.
         evs = (
             db.query(Evidence)
             .options(joinedload(Evidence.document))
             .filter(Evidence.narrative_id == n.id)
-            .order_by(Evidence.created_at.desc())
+            .order_by(Evidence.page.asc().nullslast(), Evidence.id.asc())
             .limit(20)
             .all()
         )

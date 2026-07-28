@@ -151,7 +151,7 @@ export default async function ThemePage(
                   Narratives
                 </h2>
                 <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-                  Oldest → newest. Change-linked items are highlighted. Open original to view source; Reassign to move.
+                  Newest dates first; within a document, reading order. Change-linked items are highlighted. Open original to view source; Reassign to move.
                 </p>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" data-narrative-scroll>

@@ -10,17 +10,12 @@ const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 function narrativesFromLastWeek(narratives: Narrative[]): Narrative[] {
   const cutoff = Date.now() - ONE_WEEK_MS;
-  return narratives
-    .filter((n) => {
-      const d = n.last_seen ?? n.first_seen ?? n.date_created;
-      if (!d) return false;
-      return new Date(d).getTime() >= cutoff;
-    })
-    .sort((a, b) => {
-      const ta = new Date(a.last_seen ?? a.first_seen ?? a.date_created ?? 0).getTime();
-      const tb = new Date(b.last_seen ?? b.first_seen ?? b.date_created ?? 0).getTime();
-      return ta - tb;
-    });
+  // Keep API order: newest dates first; within a document, reading order.
+  return narratives.filter((n) => {
+    const d = n.last_seen ?? n.first_seen ?? n.date_created;
+    if (!d) return false;
+    return new Date(d).getTime() >= cutoff;
+  });
 }
 
 type Evidence = {
@@ -120,7 +115,7 @@ export function ReaderThemeSection({
           </h3>
           <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
             <Link href={`/themes/${themeId}`} className="text-sky-600 hover:underline dark:text-sky-400">View all narratives</Link>
-            {" · Oldest → newest"}
+            {" · Newest dates first; within a document, reading order"}
             {changeIds.length > 0 ? " · Highlighted items drive the change signal" : ""}
           </p>
           <div className="mt-2">
